@@ -31,6 +31,7 @@ pub async fn create_instance(app: AppHandle, action: Action, context: Context) -
 			children: None,
 			feedback_layout: action.encoder.as_ref().and_then(|e| e.layout.clone()),
 			feedback: serde_json::Value::Null,
+			skip_persistence: None,
 		};
 		children.push(instance.clone());
 
@@ -63,6 +64,7 @@ pub async fn create_instance(app: AppHandle, action: Action, context: Context) -
 			},
 			feedback_layout: action.encoder.as_ref().and_then(|e| e.layout.clone()),
 			feedback: serde_json::Value::Null,
+			skip_persistence: None,
 		};
 
 		*slot = Some(instance.clone());
@@ -321,6 +323,24 @@ pub async fn trigger_virtual_touch(context: Context, hold: bool) -> Result<(), E
 	})
 	.await?;
 	Ok(())
+}
+
+#[command]
+pub async fn toggle_skip_persistence(context: Context) -> Result<Option<bool>, Error> {
+	let mut locks = acquire_locks_mut().await;
+	let global_default = crate::store::get_settings().map(|s| s.value.skip_persistence_default).unwrap_or(false);
+	let slot = get_slot_mut(&context, &mut locks).await?;
+	if let Some(instance) = slot {
+		instance.skip_persistence = match instance.skip_persistence {
+			None => Some(!global_default),
+			Some(_) => None,
+		};
+		let new_value = instance.skip_persistence;
+		save_profile(&context.device, &mut locks).await?;
+		Ok(new_value)
+	} else {
+		Ok(None)
+	}
 }
 
 #[derive(Clone, serde::Serialize)]

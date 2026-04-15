@@ -329,6 +329,8 @@ pub struct ActionInstance {
 	/// objects with properties from the layout spec.
 	#[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
 	pub feedback: serde_json::Value,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub skip_persistence: Option<bool>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

@@ -85,6 +85,7 @@ async fn main() {
 			frontend::instances::trigger_virtual_encoder_down,
 			frontend::instances::trigger_virtual_encoder_up,
 			frontend::instances::trigger_virtual_touch,
+			frontend::instances::toggle_skip_persistence,
 			frontend::profiles::get_profiles,
 			frontend::profiles::get_selected_profile,
 			frontend::profiles::set_selected_profile,

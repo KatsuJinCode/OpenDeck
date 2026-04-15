@@ -72,6 +72,8 @@ pub struct DiskActionInstance {
 	pub feedback_layout: Option<String>,
 	#[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
 	pub feedback: serde_json::Value,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub skip_persistence: Option<bool>,
 }
 
 impl From<ActionInstance> for DiskActionInstance {
@@ -139,6 +141,7 @@ impl From<ActionInstance> for DiskActionInstance {
 			children: value.children.map(|c| c.into_iter().map(|v| v.into()).collect()),
 			feedback_layout: value.feedback_layout,
 			feedback: value.feedback,
+			skip_persistence: value.skip_persistence,
 		}
 	}
 }
@@ -190,6 +193,7 @@ impl DiskActionInstance {
 			children: self.children.map(|c| c.into_iter().map(|v| v.into_action_instance(path)).collect()),
 			feedback_layout: self.feedback_layout,
 			feedback: self.feedback,
+			skip_persistence: self.skip_persistence,
 		}
 	}
 }
