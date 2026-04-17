@@ -17,6 +17,12 @@ inspectedInstance.subscribe(async (value) => {
 
 export const inspectedParentAction: Writable<Context | null> = writable(null);
 
+// Listen for backend requests to open a child's property inspector
+import { listen } from "@tauri-apps/api/event";
+listen<string>("open_child_pi", (event) => {
+	inspectedInstance.set(event.payload);
+});
+
 export const openContextMenu: Writable<{ context: Context; x: number; y: number } | null> = writable(null);
 document.addEventListener("click", () => openContextMenu.set(null));
 document.addEventListener("keydown", (event) => {

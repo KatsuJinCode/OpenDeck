@@ -13,6 +13,7 @@
 
 	import { invoke } from "@tauri-apps/api/core";
 	import { listen } from "@tauri-apps/api/event";
+	import { onDestroy } from "svelte";
 	import { message } from "@tauri-apps/plugin-dialog";
 
 	let folders: { [name: string]: string[] } = {};
@@ -52,7 +53,7 @@
 		$inspectedInstance = null;
 	}
 
-	listen("rerender_images", async () => {
+	const unlistenRerenderImages = listen("rerender_images", async () => {
 		try {
 			profile = await invoke("get_selected_profile", { device: device.id });
 		} catch {}
@@ -160,7 +161,12 @@
 		applications = await invoke("get_applications");
 		applicationProfiles = await invoke("get_application_profiles");
 	})();
-	listen("applications", ({ payload }: { payload: string[] }) => applications = payload);
+	const unlistenApplications = listen("applications", ({ payload }: { payload: string[] }) => applications = payload);
+
+	onDestroy(async () => {
+		(await unlistenRerenderImages)();
+		(await unlistenApplications)();
+	});
 	let applicationsAddAppName: string = "opendeck_select_application";
 	let applicationsAddProfile: string = "opendeck_select_profile";
 	$: {

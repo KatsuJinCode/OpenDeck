@@ -39,6 +39,8 @@ impl ProfileStores {
 				id: id.to_owned(),
 				keys: Vec::new(),
 				sliders: Vec::new(),
+				swipe_left: None,
+				swipe_right: None,
 			};
 
 			let mut store = Store::new(&canonical_id, &config_dir().join("profiles"), default).context(format!("Failed to create store for profile {}", canonical_id))?;
@@ -53,12 +55,34 @@ impl ProfileStores {
 				instance.action.plugin == "opendeck"
 					|| (plugins_dir.join(&instance.action.plugin).exists() && (!registered.contains(&instance.action.plugin) || actions.iter().any(|v| v.uuid == instance.action.uuid)))
 			};
+			// Refresh the manifest-derived `action` cache on each saved slot
+			// from the currently loaded plugin manifests, and heal any encoder
+			// slot whose `feedback_layout` is null by adopting the manifest's
+			// declared default (SDK: Actions[].Encoder.layout). The slot's
+			// action field is purely manifest cache -- user/plugin state lives
+			// on `settings`, `states`, `current_state`, `feedback`,
+			// `feedback_layout`, `children`, `skip_persistence` and is left
+			// untouched.
+			let refresh_instance = |instance: &mut ActionInstance| {
+				if let Some(fresh) = actions.iter().find(|v| v.uuid == instance.action.uuid) {
+					instance.action = (*fresh).clone();
+					if instance.context.controller == "Encoder" && instance.feedback_layout.is_none() {
+						instance.feedback_layout = instance.action.encoder.as_ref().and_then(|e| e.layout.clone());
+					}
+				}
+			};
 			for slot in store.value.keys.iter_mut().chain(store.value.sliders.iter_mut()) {
 				if let Some(instance) = slot {
 					if !keep_instance(instance) {
 						*slot = None;
-					} else if let Some(children) = &mut instance.children {
-						children.retain_mut(|child| keep_instance(child));
+					} else {
+						refresh_instance(instance);
+						if let Some(children) = &mut instance.children {
+							children.retain_mut(|child| keep_instance(child));
+							for child in children.iter_mut() {
+								refresh_instance(child);
+							}
+						}
 					}
 				}
 			}

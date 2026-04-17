@@ -67,13 +67,22 @@ pub enum InboundEventType {
 	SendToPlugin(ContextAndPayloadEvent<serde_json::Value>),
 	SwitchProfile(misc::SwitchProfileEvent),
 	DeviceBrightness(misc::DeviceBrightnessEvent),
+	TriggerChildPress(misc::TriggerChildPressEvent),
+	CreateChild(misc::CreateChildEvent),
+	RemoveChild(misc::RemoveChildEvent),
+	OpenChildPI(misc::OpenChildPIEvent),
 }
 
 pub async fn process_incoming_message(data: Result<Message, Error>, uuid: &str, skip_auth: bool) {
 	if let Ok(Message::Text(text)) = data {
 		let decoded: InboundEventType = match serde_json::from_str(&text) {
 			Ok(event) => event,
-			Err(_) => return,
+			Err(e) => {
+				if text.contains("Child") || text.contains("child") {
+					log::warn!("Custom event parse error: {} -- {}", e, &text[..text.len().min(300)]);
+				}
+				return;
+			},
 		};
 
 		if !(uuid.is_empty() && skip_auth) {
@@ -94,6 +103,10 @@ pub async fn process_incoming_message(data: Result<Message, Error>, uuid: &str, 
 					if instance.action.plugin != uuid {
 						return;
 					}
+				} else if context.index > 0 {
+					// Child instance at a virtual position -- skip auth.
+					// The child was created by createChild and lives in a
+					// parent slot's children array, not as a top-level slot.
 				} else {
 					return;
 				}
@@ -139,6 +152,10 @@ pub async fn process_incoming_message(data: Result<Message, Error>, uuid: &str, 
 			InboundEventType::SendToPlugin(_) => Ok(()),
 			InboundEventType::SwitchProfile(event) => misc::switch_profile(event).await,
 			InboundEventType::DeviceBrightness(event) => misc::device_brightness(event).await,
+				InboundEventType::TriggerChildPress(event) => misc::trigger_child_press(event).await,
+				InboundEventType::CreateChild(event) => misc::create_child(event).await,
+				InboundEventType::RemoveChild(event) => misc::remove_child(event).await,
+				InboundEventType::OpenChildPI(event) => misc::open_child_pi(event).await,
 		} && !error.to_string().contains("closed connection")
 		{
 			warn!("Failed to process incoming event from plugin: {}", error);

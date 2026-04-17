@@ -2,13 +2,17 @@
 	import type { Context } from "$lib/Context";
 	import { invoke } from "@tauri-apps/api/core";
 	import { listen } from "@tauri-apps/api/event";
+	import { onDestroy } from "svelte";
+
+	import { openDialPosition } from "$lib/dragState";
 
 	export let context: Context;
+	export let encHighlight: "empty" | "occupied" | "hovered" | "incompatible" | null = null;
 
 	const STEPS = 30;
 	const DEGREES_PER_TICK = 360 / STEPS; // 12 degrees
 
-	let showControls = false;
+	$: showControls = $openDialPosition === context.position;
 	let dialHeld = false;
 	let pressing = false;
 	let touchFlash = false;
@@ -19,12 +23,17 @@
 	let showBindings = false;
 
 	// Listen for physical encoder rotation from the device
-	listen("encoder_rotated", ({ payload }: { payload: { device: string; position: number; ticks: number } }) => {
+	const unlistenEncoderRotated = listen("encoder_rotated", ({ payload }: { payload: { device: string; position: number; ticks: number } }) => {
 		if (payload.device === context.device && payload.position === context.position) {
 			dialAngle += payload.ticks * DEGREES_PER_TICK;
 			rotateFlash = payload.ticks < 0 ? 'left' : 'right';
 			setTimeout(() => rotateFlash = null, 120);
 		}
+	});
+
+	onDestroy(async () => {
+		(await unlistenEncoderRotated)();
+		if (rotateInterval !== undefined) clearInterval(rotateInterval);
 	});
 
 	// Key binding state (stored per encoder in localStorage)
@@ -145,14 +154,19 @@
 	}
 
 	function handleDialClick() {
-		showControls = !showControls;
-		if (!showControls) { showBindings = false; listeningFor = null; }
+		if (showControls) {
+			openDialPosition.set(null);
+			showBindings = false;
+			listeningFor = null;
+		} else {
+			openDialPosition.set(context.position);
+		}
 	}
 
 	function handleClickOutside(event: MouseEvent) {
 		const target = event.target as HTMLElement;
 		if (!target.closest('.encoder-dial-wrapper')) {
-			showControls = false;
+			openDialPosition.set(null);
 			showBindings = false;
 			listeningFor = null;
 		}
@@ -171,9 +185,12 @@
 	<!-- The dial circle with 30 notch marks -->
 	<button
 		class="w-12 h-12 rounded-full border-2 bg-neutral-800 cursor-pointer focus:outline-none transition-all duration-100 relative overflow-hidden"
-		class:border-blue-500={showControls}
-		class:border-neutral-600={!showControls && !dialHeld}
-		class:border-amber-500={dialHeld}
+		class:border-blue-500={!encHighlight && showControls}
+		class:border-neutral-600={!encHighlight && !showControls && !dialHeld}
+		class:border-amber-500={!encHighlight && dialHeld}
+		class:border-green-500={encHighlight === "empty"}
+		class:border-orange-500={encHighlight === "occupied"}
+		class:border-blue-400={encHighlight === "hovered"}
 		style="transform: {pressing ? 'scale(0.9)' : 'scale(1)'};"
 		on:click|stopPropagation={handleDialClick}
 		on:dblclick|stopPropagation={dialPressAction}

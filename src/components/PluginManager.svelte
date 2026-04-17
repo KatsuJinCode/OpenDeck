@@ -19,14 +19,18 @@
 	import { invoke } from "@tauri-apps/api/core";
 	import { onOpenUrl } from "@tauri-apps/plugin-deep-link";
 	import { ask, message, open } from "@tauri-apps/plugin-dialog";
+	import { onDestroy } from "svelte";
 
 	// @ts-expect-error
 	const fetch = window.fetchNative ?? window.fetch;
 
 	let showPopup: boolean;
-	setInterval(async () => {
+	const pollInterval = window.setInterval(async () => {
 		if (showPopup) installed = await invoke("list_plugins");
 	}, 1e3);
+	onDestroy(() => {
+		clearInterval(pollInterval);
+	});
 
 	async function installPlugin(name: string, url: string | null, file: string | null, fallback_id: string | null) {
 		if (!file && !await ask(`It may take a while to install the plugin.`, { title: `Install "${name}"?` })) return;

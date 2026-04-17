@@ -42,6 +42,7 @@ pub async fn register_plugin(event: RegisterEvent, stream: WebSocketStream<TcpSt
 			});
 		}
 		RegisterEvent::RegisterPropertyInspector { uuid } => {
+			log::debug!("Registered property inspector {}", uuid);
 			if let Some(queue) = PROPERTY_INSPECTOR_QUEUES.read().await.get(&uuid) {
 				for message in queue {
 					let _ = read.feed(message.clone()).await;

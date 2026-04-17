@@ -7,6 +7,7 @@
 	import { invoke } from "@tauri-apps/api/core";
 	import { listen } from "@tauri-apps/api/event";
 	import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+	import { onDestroy } from "svelte";
 
 	export let devices: { [id: string]: DeviceInfo } = {};
 	export let value: string;
@@ -31,7 +32,7 @@
 		registered = [];
 	}
 
-	listen("switch_profile", async ({ payload }: { payload: { device: string; profile: string } }) => {
+	const unlistenSwitchProfile = listen("switch_profile", async ({ payload }: { payload: { device: string; profile: string } }) => {
 		if (payload.device == value) {
 			$profileManager?.setProfile(payload.profile);
 		} else {
@@ -41,7 +42,12 @@
 	});
 
 	(async () => devices = await invoke("get_devices"))();
-	listen("devices", ({ payload }: { payload: { [id: string]: DeviceInfo } }) => devices = payload);
+	const unlistenDevices = listen("devices", ({ payload }: { payload: { [id: string]: DeviceInfo } }) => devices = payload);
+
+	onDestroy(async () => {
+		(await unlistenSwitchProfile)();
+		(await unlistenDevices)();
+	});
 
 	let buildInfo: string;
 	(async () => buildInfo = await invoke("get_build_info"))();

@@ -9,6 +9,7 @@
 	import Key from "./Key.svelte";
 
 	import { inspectedInstance, inspectedParentAction } from "$lib/propertyInspector";
+	import { dragAction, hoveredSlot } from "$lib/dragState";
 
 	import { invoke } from "@tauri-apps/api/core";
 
@@ -17,6 +18,36 @@
 
 	export let selectedDevice: string;
 
+	let allProfileIds: string[] = [];
+	$: if (device) {
+		invoke<string[]>("get_profiles", { device: device.id }).then(ids => allProfileIds = ids);
+	}
+
+	// Resolve swipe neighbors: explicit config or alphabetical fallback
+	function resolveSwipeNeighbor(direction: "left" | "right"): string {
+		const explicit = direction === "left" ? profile.swipe_left : profile.swipe_right;
+		if (explicit) return explicit;
+		if (allProfileIds.length < 2) return profile.id;
+		const sorted = [...allProfileIds].sort();
+		const idx = sorted.indexOf(profile.id);
+		if (idx === -1) return sorted[0];
+		if (direction === "left") return sorted[(idx + sorted.length - 1) % sorted.length];
+		return sorted[(idx + 1) % sorted.length];
+	}
+	$: resolvedLeft = resolveSwipeNeighbor("left");
+	$: resolvedRight = resolveSwipeNeighbor("right");
+
+	async function setSwipeNeighbor(direction: "left" | "right", value: string) {
+		if (direction === "left") profile.swipe_left = value;
+		else profile.swipe_right = value;
+		await invoke("set_swipe_neighbor", {
+			device: device.id,
+			profile: profile.id,
+			direction,
+			target: value,
+		});
+	}
+
 	function handleDragStart({ dataTransfer }: DragEvent, controller: string, position: number) {
 		if (!dataTransfer) return;
 		dataTransfer.effectAllowed = "move";
@@ -24,20 +55,23 @@
 		dataTransfer.setData("position", position.toString());
 	}
 
-	function handleDragOver(event: DragEvent) {
+	function handleDragOver(event: DragEvent, controller?: string, position?: number) {
 		event.preventDefault();
 		if (!event.dataTransfer) return;
 		if (event.dataTransfer.types.includes("action")) event.dataTransfer.dropEffect = "copy";
 		else if (event.dataTransfer.types.includes("controller")) event.dataTransfer.dropEffect = "move";
+		if (controller != null && position != null) hoveredSlot.set({ controller, position });
 	}
 
 	async function handleDrop({ dataTransfer }: DragEvent, controller: string, position: number) {
+		hoveredSlot.set(null);
 		let context = { device: device.id, profile: profile.id, controller, position };
 		let array = controller == "Encoder" ? profile.sliders : profile.keys;
 		if (dataTransfer?.getData("action")) {
 			let action = JSON.parse(dataTransfer?.getData("action"));
 			if (array[position]) {
-				return;
+				await invoke("remove_instance", { context: array[position].context });
+				array[position] = null;
 			}
 			array[position] = await invoke("create_instance", { context, action });
 			profile = profile;
@@ -194,16 +228,22 @@
 			{#each { length: device.rows } as _, r}
 				<div class="flex flex-row" role="row">
 					{#each { length: device.columns } as _, c}
+						{@const pos = (r * device.columns) + c}
+						{@const isCompat = $dragAction ? $dragAction.controllers.includes("Keypad") : false}
+						{@const isHovered = $hoveredSlot?.controller === "Keypad" && $hoveredSlot?.position === pos}
+						{@const isEmpty = !profile.keys[pos]}
 						<Key
-							context={{ device: device.id, profile: profile.id, controller: "Keypad", position: (r * device.columns) + c }}
-							bind:inslot={profile.keys[(r * device.columns) + c]}
-							on:dragover={handleDragOver}
-							on:drop={(event) => handleDrop(event, "Keypad", (r * device.columns) + c)}
-							on:dragstart={(event) => handleDragStart(event, "Keypad", (r * device.columns) + c)}
+							context={{ device: device.id, profile: profile.id, controller: "Keypad", position: pos }}
+							bind:inslot={profile.keys[pos]}
+							on:dragover={(event) => handleDragOver(event, "Keypad", pos)}
+							on:dragleave={() => hoveredSlot.set(null)}
+							on:drop={(event) => handleDrop(event, "Keypad", pos)}
+							on:dragstart={(event) => handleDragStart(event, "Keypad", pos)}
 							{handlePaste}
 							size={device.id.startsWith("sd-") && device.rows == 4 && device.columns == 8 ? 192 : 144}
 							label="Key {String.fromCharCode(65 + r)}{c + 1}"
 							tabindex={focusedRow === r && focusedCol === c ? 0 : -1}
+							dragHighlight={$dragAction ? (isCompat ? (isHovered ? "hovered" : (isEmpty ? "empty" : "occupied")) : "incompatible") : null}
 						/>
 					{/each}
 				</div>
@@ -211,40 +251,90 @@
 		</div>
 
 		{#if device.encoders > 0}
-			<div class="flex flex-col items-center mt-2" role="row">
-				<div class="encoder-strip flex flex-row" style="width: {device.columns <= 8 ? (device.columns * 132) : (device.columns * 144)}px;">
-					{#each { length: device.encoders } as _, i}
-						<Key
-							context={{ device: device.id, profile: profile.id, controller: "Encoder", position: i }}
-							bind:inslot={profile.sliders[i]}
-							on:dragover={handleDragOver}
-							on:drop={(event) => handleDrop(event, "Encoder", i)}
-							on:dragstart={(event) => handleDragStart(event, "Encoder", i)}
-							{handlePaste}
-							encoderStrip
-							encoderPosition={i}
-							encoderCount={device.encoders}
-							label="Encoder {i + 1}"
-							tabindex={focusedRow === encoderRowIndex && focusedCol === i ? 0 : -1}
-						/>
-					{/each}
+			{#if allProfileIds.length > 1}
+				<div class="flex justify-between items-center mx-auto mt-1 mb-0.5" style="width: {device.columns <= 8 ? (device.columns * 132) : (device.columns * 144)}px;">
+					<label class="flex items-center gap-1.5 px-2 py-1 rounded cursor-pointer hover:bg-neutral-800 transition-colors">
+						<span class="text-sm text-neutral-500">&#x2190;</span>
+						<div class="select-profile-wrapper" style="padding-right: 12px;">
+							<select
+								value={profile.swipe_left || resolvedLeft}
+								on:change={(e) => setSwipeNeighbor("left", e.currentTarget.value)}
+							>
+								{#each allProfileIds.filter(p => p !== profile.id) as pid}
+									<option value={pid}>{pid}</option>
+								{/each}
+							</select>
+						</div>
+					</label>
+					<span class="text-[10px] text-neutral-500 uppercase tracking-wider">Swipe to profile</span>
+					<label class="flex items-center gap-1.5 px-2 py-1 rounded cursor-pointer hover:bg-neutral-800 transition-colors">
+						<div class="select-profile-wrapper" style="padding-right: 12px;">
+							<select
+								value={profile.swipe_right || resolvedRight}
+								on:change={(e) => setSwipeNeighbor("right", e.currentTarget.value)}
+							>
+								{#each allProfileIds.filter(p => p !== profile.id) as pid}
+									<option value={pid}>{pid}</option>
+								{/each}
+							</select>
+						</div>
+						<span class="text-sm text-neutral-500">&#x2192;</span>
+					</label>
 				</div>
-				<div class="flex flex-row" style="width: {device.columns <= 8 ? (device.columns * 132) : (device.columns * 144)}px;">
-					{#each { length: device.encoders } as _, i}
-						<EncoderDial context={{ device: device.id, profile: profile.id, controller: "Encoder", position: i }} />
-					{/each}
-				</div>
+			{/if}
+			<div class="flex justify-center" role="row">
+			<div class="flex flex-row items-start justify-center gap-0" style="width: {device.columns <= 8 ? (device.columns * 132) : (device.columns * 144)}px;">
+			<div class="flex flex-row items-start justify-center gap-0 flex-1">
+				{#each { length: device.encoders } as _, i}
+					{@const isCompat = $dragAction ? $dragAction.controllers.includes("Encoder") : false}
+					{@const isHovered = $hoveredSlot?.controller === "Encoder" && $hoveredSlot?.position === i}
+					{@const isEmpty = !profile.sliders[i]}
+					{@const encHighlight = $dragAction ? (isCompat ? (isHovered ? "hovered" : (isEmpty ? "empty" : "occupied")) : "incompatible") : null}
+					<div
+						class="flex flex-col items-center transition-all duration-150"
+						class:opacity-30={$dragAction && !isCompat}
+						class:brightness-125={isHovered}
+						style="flex: 1;"
+						on:dragover|preventDefault={(event) => handleDragOver(event, "Encoder", i)}
+						on:dragleave={() => hoveredSlot.set(null)}
+						on:drop={(event) => handleDrop(event, "Encoder", i)}
+					>
+						<div class="encoder-strip flex flex-row w-full">
+							<Key
+								context={{ device: device.id, profile: profile.id, controller: "Encoder", position: i }}
+								bind:inslot={profile.sliders[i]}
+								on:dragstart={(event) => handleDragStart(event, "Encoder", i)}
+								{handlePaste}
+								encoderStrip
+								encoderPosition={i}
+								encoderCount={device.encoders}
+								label="Encoder {i + 1}"
+								tabindex={focusedRow === encoderRowIndex && focusedCol === i ? 0 : -1}
+								dragHighlight={encHighlight}
+							/>
+						</div>
+						<EncoderDial context={{ device: device.id, profile: profile.id, controller: "Encoder", position: i }} {encHighlight} />
+					</div>
+				{/each}
+			</div>
+			</div>
 			</div>
 		{/if}
 
 		<div class="flex flex-row" role="row">
 			{#each { length: device.touchpoints } as _, i}
+				{@const tpos = (device.rows * device.columns) + i}
+				{@const isCompat = $dragAction ? $dragAction.controllers.includes("Keypad") : false}
+				{@const isHovered = $hoveredSlot?.controller === "Keypad" && $hoveredSlot?.position === tpos}
+				{@const isEmpty = !profile.keys[tpos]}
 				<Key
-					context={{ device: device.id, profile: profile.id, controller: "Keypad", position: (device.rows * device.columns) + i }}
-					bind:inslot={profile.keys[(device.rows * device.columns) + i]}
-					on:dragover={handleDragOver}
-					on:drop={(event) => handleDrop(event, "Keypad", (device.rows * device.columns) + i)}
-					on:dragstart={(event) => handleDragStart(event, "Keypad", (device.rows * device.columns) + i)}
+					context={{ device: device.id, profile: profile.id, controller: "Keypad", position: tpos }}
+					bind:inslot={profile.keys[tpos]}
+					on:dragover={(event) => handleDragOver(event, "Keypad", tpos)}
+					on:dragleave={() => hoveredSlot.set(null)}
+					on:drop={(event) => handleDrop(event, "Keypad", tpos)}
+					on:dragstart={(event) => handleDragStart(event, "Keypad", tpos)}
+					dragHighlight={$dragAction ? (isCompat ? (isHovered ? "hovered" : (isEmpty ? "empty" : "occupied")) : "incompatible") : null}
 					{handlePaste}
 					size={device.id.startsWith("sd-") && device.rows == 4 && device.columns == 8 ? 192 : 144}
 					isTouchPoint

@@ -5,6 +5,7 @@ mod application_watcher;
 mod device_sleep;
 mod elgato;
 mod events;
+mod plugin_telemetry;
 mod plugins;
 mod shared;
 mod store;
@@ -27,6 +28,17 @@ use tauri::{
 use tauri_plugin_log::{Target, TargetKind};
 
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
+
+#[tauri::command]
+fn log_telemetry(app: AppHandle, payload: String) -> Result<(), String> {
+	use std::io::Write;
+	let dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
+	std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+	let path = dir.join("telemetry.jsonl");
+	let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(|e| e.to_string())?;
+	writeln!(f, "{}", payload).map_err(|e| e.to_string())?;
+	Ok(())
+}
 
 fn show_window(app: &AppHandle) -> Result<(), tauri::Error> {
 	#[cfg(target_os = "macos")]
@@ -91,6 +103,7 @@ async fn main() {
 			frontend::profiles::set_selected_profile,
 			frontend::profiles::delete_profile,
 			frontend::profiles::rename_profile,
+			frontend::profiles::set_swipe_neighbor,
 			frontend::property_inspector::make_info,
 			frontend::property_inspector::switch_property_inspector,
 			frontend::property_inspector::open_url,
@@ -104,10 +117,12 @@ async fn main() {
 			frontend::settings::set_settings,
 			frontend::settings::open_config_directory,
 			frontend::settings::open_log_directory,
-			frontend::settings::get_build_info
+			frontend::settings::get_build_info,
+			log_telemetry
 		])
 		.setup(|app| {
 			APP_HANDLE.set(app.handle().clone()).unwrap();
+			plugin_telemetry::start_reporter();
 
 			#[cfg(windows)]
 			if !std::env::args().any(|v| v == "--hide") {
@@ -370,7 +385,6 @@ If you have already donated, thank you so much for your support!"#,
 
 	app.run(|app, event| {
 		if let tauri::RunEvent::Exit = event {
-			#[cfg(windows)]
 			futures::executor::block_on(plugins::deactivate_plugins());
 			tokio::spawn(elgato::reset_devices());
 			use tauri_plugin_aptabase::EventTracker;

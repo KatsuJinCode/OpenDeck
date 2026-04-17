@@ -19,7 +19,7 @@ struct Coordinates {
 
 #[derive(Serialize)]
 #[allow(non_snake_case)]
-struct GenericInstancePayload {
+pub(crate) struct GenericInstancePayload {
 	settings: serde_json::Value,
 	coordinates: Coordinates,
 	controller: String,
@@ -28,7 +28,7 @@ struct GenericInstancePayload {
 }
 
 impl GenericInstancePayload {
-	fn new(instance: &crate::shared::ActionInstance) -> Self {
+	pub(crate) fn new(instance: &crate::shared::ActionInstance) -> Self {
 		let coordinates = match &instance.context.controller[..] {
 			"Encoder" => Coordinates {
 				row: 0,
@@ -53,7 +53,7 @@ impl GenericInstancePayload {
 	}
 }
 
-async fn send_to_plugin(plugin: &str, data: &impl Serialize) -> Result<(), anyhow::Error> {
+pub(crate) async fn send_to_plugin(plugin: &str, data: &impl Serialize) -> Result<(), anyhow::Error> {
 	let message = tokio_tungstenite::tungstenite::Message::Text(serde_json::to_string(data)?.into());
 	let mut sockets = super::PLUGIN_SOCKETS.lock().await;
 
@@ -92,8 +92,10 @@ async fn send_to_property_inspector(context: &crate::shared::ActionContext, data
 	let mut sockets = super::PROPERTY_INSPECTOR_SOCKETS.lock().await;
 
 	if let Some(socket) = sockets.get_mut(&context.to_string()) {
+		log::debug!("[PI] sending to connected PI {}", context.to_string());
 		socket.send(message).await?;
 	} else {
+		log::debug!("[PI] queuing for PI {} (not connected)", context.to_string());
 		let mut queues = super::PROPERTY_INSPECTOR_QUEUES.write().await;
 		if queues.contains_key(&context.to_string()) {
 			queues.get_mut(&context.to_string()).unwrap().push(message);

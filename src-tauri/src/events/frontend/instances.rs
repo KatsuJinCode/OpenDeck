@@ -12,6 +12,22 @@ pub async fn create_instance(app: AppHandle, action: Action, context: Context) -
 		return Ok(None);
 	}
 
+	// Per Elgato SDK (https://docs.elgato.com/streamdeck/sdk/guides/dials/),
+	// encoder feedback renders via layouts. Default to $X1 when the manifest
+	// omits Encoder.layout, or when a non-encoder action is dropped on an
+	// encoder slot, so the LCD shows the title+icon unstretched instead of
+	// being rendered as a full-rect key image.
+	let default_encoder_layout = |action: &Action| -> Option<String> {
+		let explicit = action.encoder.as_ref().and_then(|e| e.layout.clone());
+		if explicit.is_some() {
+			explicit
+		} else if context.controller == "Encoder" {
+			Some("$X1".to_owned())
+		} else {
+			None
+		}
+	};
+
 	let mut locks = acquire_locks_mut().await;
 	let slot = get_slot_mut(&context, &mut locks).await?;
 
@@ -29,7 +45,7 @@ pub async fn create_instance(app: AppHandle, action: Action, context: Context) -
 			current_state: 0,
 			settings: serde_json::Value::Object(serde_json::Map::new()),
 			children: None,
-			feedback_layout: action.encoder.as_ref().and_then(|e| e.layout.clone()),
+			feedback_layout: default_encoder_layout(&action),
 			feedback: serde_json::Value::Null,
 			skip_persistence: None,
 		};
@@ -57,12 +73,12 @@ pub async fn create_instance(app: AppHandle, action: Action, context: Context) -
 			states: action.states.clone(),
 			current_state: 0,
 			settings: serde_json::Value::Object(serde_json::Map::new()),
-			children: if matches!(action.uuid.as_str(), "opendeck.multiaction" | "opendeck.toggleaction") {
+			children: if matches!(action.uuid.as_str(), "opendeck.multiaction" | "opendeck.toggleaction" | "com.jw.encoder-multi-key.grid") {
 				Some(vec![])
 			} else {
 				None
 			},
-			feedback_layout: action.encoder.as_ref().and_then(|e| e.layout.clone()),
+			feedback_layout: default_encoder_layout(&action),
 			feedback: serde_json::Value::Null,
 			skip_persistence: None,
 		};
@@ -205,8 +221,12 @@ struct UpdateStateEvent {
 
 pub async fn update_state(app: &AppHandle, context: ActionContext, locks: &mut LocksMut<'_>) -> Result<(), anyhow::Error> {
 	let window = app.get_webview_window("main").unwrap();
+	// Per-context event name so Tauri delivers only to the specific Key that
+	// owns this context, rather than broadcasting to all N Key listeners.
+	// Tauri event names disallow dots, so use ":" as separator in place of ".".
+	let event_name = format!("update_state::{}", context.to_string().replace('.', ":"));
 	window.emit(
-		"update_state",
+		&event_name,
 		UpdateStateEvent {
 			contents: get_instance_mut(&context, locks).await?.cloned(),
 			context,
@@ -228,6 +248,12 @@ pub async fn set_state(context: ActionContext, index: u16, state: ActionState) -
 
 #[command]
 pub async fn update_image(context: Context, image: Option<String>) {
+	// Encoder slots are driven by the backend fast path (setFeedback) and
+	// clear_screen (profile switch). The frontend must never push null to
+	// encoder slots -- doing so races with the fast path and causes flash.
+	if context.controller == "Encoder" && image.is_none() {
+		return;
+	}
 	if Some(&context.profile) != crate::store::profiles::DEVICE_STORES.write().await.get_selected_profile(&context.device).ok().as_ref() {
 		return;
 	}

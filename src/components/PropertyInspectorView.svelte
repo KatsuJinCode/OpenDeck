@@ -8,6 +8,7 @@
 
 	import { invoke } from "@tauri-apps/api/core";
 	import { listen } from "@tauri-apps/api/event";
+	import { onDestroy } from "svelte";
 
 	let iframes: { [context: string]: HTMLIFrameElement } = {};
 	let iframeContainer: HTMLDivElement;
@@ -81,7 +82,7 @@
 		}
 	};
 
-	window.addEventListener("message", ({ data }) => {
+	const messageHandler = ({ data }: MessageEvent) => {
 		if (data.event == "windowOpened") {
 			const iframe = iframes[data.payload];
 			iframe.style.position = "absolute";
@@ -103,6 +104,9 @@
 			iframeClosePopup.style.display = "block";
 		} else if (data.event == "windowClosed") {
 			closePopup(data.payload);
+		} else if (data.event == "inspectChild") {
+			// PI requests switching to a child's property inspector
+			$inspectedInstance = data.payload;
 		} else if (data.event == "openUrl") {
 			invoke("open_url", { url: data.payload });
 		} else if (data.event == "fetch") {
@@ -149,15 +153,16 @@
 				iframes[data.payload.context]?.contentWindow?.postMessage({ event: "fetchError", payload: { id: data.payload.id, error } }, getWebserverUrl());
 			});
 		}
-	});
+	};
+	window.addEventListener("message", messageHandler);
 
 	const nonNull = <T>(o: T | null): o is T => o != null;
 	$: instances = profile
 		.keys.filter(nonNull)
 		.reduce((prev, current) => prev.concat(current.children ? [current, ...current.children] : current), [] as ActionInstance[])
-		.concat(profile.sliders.filter(nonNull));
+		.concat(profile.sliders.filter(nonNull).reduce((prev, current) => prev.concat(current.children ? [current, ...current.children] : current), [] as ActionInstance[]));
 
-	listen("plugin_reloaded", ({ payload }: { payload: string }) => {
+	const unlistenPluginReloaded = listen("plugin_reloaded", ({ payload }: { payload: string }) => {
 		for (const instance of instances) {
 			if (instance.action.plugin == payload && iframes[instance.context]) {
 				iframes[instance.context].src += "";
@@ -166,6 +171,11 @@
 				}
 			}
 		}
+	});
+
+	onDestroy(async () => {
+		(await unlistenPluginReloaded)();
+		window.removeEventListener("message", messageHandler);
 	});
 </script>
 

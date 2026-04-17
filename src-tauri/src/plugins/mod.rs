@@ -362,7 +362,6 @@ pub async fn deactivate_plugin(app: &AppHandle, uuid: &str) -> Result<(), anyhow
 	}
 }
 
-#[cfg(windows)]
 pub async fn deactivate_plugins() {
 	let uuids = {
 		let instances = INSTANCES.lock().await;
@@ -479,7 +478,7 @@ async fn init_websocket_server() {
 	}
 
 	while let Ok((stream, _)) = listener.accept().await {
-		accept_connection(stream).await;
+		tokio::spawn(accept_connection(stream));
 	}
 }
 
@@ -499,7 +498,14 @@ async fn accept_connection(stream: TcpStream) {
 	match serde_json::from_str(&register_event.clone().into_text().unwrap()) {
 		Ok(event) => crate::events::register_plugin(event, socket).await,
 		Err(_) => {
-			let _ = crate::events::inbound::process_incoming_message(Ok(register_event), "", false).await;
+			// Non-plugin connection: process the first message and keep
+			// reading until the client disconnects. This allows plugins to
+			// open secondary connections for custom events (createChild,
+			// triggerChildPress, etc.) without registering as a plugin.
+			let _ = crate::events::inbound::process_incoming_message(Ok(register_event), "", true).await;
+			while let Some(Ok(msg)) = socket.next().await {
+				let _ = crate::events::inbound::process_incoming_message(Ok(msg), "", true).await;
+			}
 		}
 	}
 }

@@ -27,6 +27,7 @@ pub async fn set_title(event: ContextAndPayloadEvent<SetTitlePayload>) -> Result
 	let mut skip = false;
 
 	if let Some(instance) = get_instance_mut(&event.context, &mut locks).await? {
+		crate::plugin_telemetry::record("set_title", &instance.action.plugin);
 		let global_default = crate::store::get_settings().map(|s| s.value.skip_persistence_default).unwrap_or(false);
 		skip = instance.skip_persistence.unwrap_or(global_default);
 
@@ -67,7 +68,38 @@ pub async fn set_image(mut event: ContextAndPayloadEvent<SetImagePayload>) -> Re
 	let mut locks = acquire_locks_mut().await;
 	let mut skip = false;
 
-	if let Some(instance) = get_instance_mut(&event.context, &mut locks).await? {
+	// For child instances (index > 0) with a different controller than the
+	// parent (e.g. Keypad child on an Encoder slot), the normal lookup by
+	// controller fails. Search all slots' children as fallback.
+	let lookup_result = get_instance_mut(&event.context, &mut locks).await;
+	let found = match lookup_result {
+		Ok(Some(inst)) => Some(inst),
+		Ok(None) | Err(_) if event.context.index > 0 => {
+			let ctx = &event.context;
+			let selected = locks.device_stores.get_selected_profile(&ctx.device)?;
+			let device_info = crate::shared::DEVICES.get(&ctx.device).ok_or_else(|| anyhow::anyhow!("device not found"))?;
+			let profile = &mut locks.profile_stores.get_profile_store_mut(&device_info, &selected).await?.value;
+			let mut result = None;
+			for slot in profile.keys.iter_mut().chain(profile.sliders.iter_mut()) {
+				if let Some(inst) = slot {
+					if let Some(children) = &mut inst.children {
+						if let Some(child) = children.iter_mut().find(|c| c.context == *ctx) {
+							result = Some(child as &mut crate::shared::ActionInstance);
+							break;
+						}
+					}
+				}
+			}
+			result
+		},
+		Ok(None) => None,
+		Err(e) => {
+			log::warn!("[set_image] lookup error for {}: {}", event.context.to_string(), e);
+			None
+		},
+	};
+	if let Some(instance) = found {
+		crate::plugin_telemetry::record("set_image", &instance.action.plugin);
 		let global_default = crate::store::get_settings().map(|s| s.value.skip_persistence_default).unwrap_or(false);
 		skip = instance.skip_persistence.unwrap_or(global_default);
 
@@ -97,7 +129,69 @@ pub async fn set_image(mut event: ContextAndPayloadEvent<SetImagePayload>) -> Re
 				state.image = event.payload.image.clone().unwrap_or(instance.action.states[index].image.clone());
 			}
 		}
-		update_state(crate::APP_HANDLE.get().unwrap(), instance.context.clone(), &mut locks).await?;
+		// Capture child info before releasing the borrow on instance
+		log::debug!("[set_image] context={} index={}", instance.context.to_string(), instance.context.index);
+		let child_notify = if instance.context.index > 0 {
+			Some((
+				instance.context.clone(),
+				instance.states[instance.current_state as usize].image.clone(),
+				// Parent is always on Encoder controller. Derive parent position
+				// from virtual position formula: child_pos = 100 + parent_pos * 10 + idx
+				crate::shared::Context {
+					device: instance.context.device.clone(),
+					profile: instance.context.profile.clone(),
+					controller: "Encoder".to_owned(),
+					position: (instance.context.position.saturating_sub(100)) / 10,
+				},
+			))
+		} else {
+			None
+		};
+
+		if let Err(e) = update_state(crate::APP_HANDLE.get().unwrap(), instance.context.clone(), &mut locks).await {
+			log::debug!("[set_image] update_state error (non-fatal for children): {}", e);
+		}
+
+		// Notify parent plugin with child's image for grid compositing
+		if let Some((child_ctx, child_image, parent_context)) = child_notify {
+			log::info!("[set_image] child detected, looking up parent at {}.{}", parent_context.device, parent_context.position);
+			let forward_info = if let Ok(Some(parent)) = get_instance_mut(&crate::shared::ActionContext::from_context(parent_context, 0), &mut locks).await {
+				log::info!("[set_image] parent found: {} children={}", parent.action.uuid, parent.children.as_ref().map(|c| c.len()).unwrap_or(0));
+				let child_index = parent.children.as_ref()
+					.and_then(|c| c.iter().position(|ch| ch.context == child_ctx));
+				log::info!("[set_image] child_index={:?} child_ctx={}", child_index, child_ctx.to_string());
+				child_index.map(|idx| (parent.action.plugin.clone(), parent.action.uuid.clone(), parent.context.to_string(), idx))
+			} else {
+				log::warn!("[set_image] parent NOT FOUND");
+				None
+			};
+			log::info!("[set_image] forward_info={}", forward_info.is_some());
+			drop(locks);
+
+			if let Some((plugin, action_uuid, context_str, idx)) = forward_info {
+				log::info!("[set_image] forwarding child {} image to {}", idx, plugin);
+				let send_result = crate::events::outbound::send_to_plugin(
+					&plugin,
+					&serde_json::json!({
+						"event": "sendToPlugin",
+						"action": action_uuid,
+						"context": context_str,
+						"payload": {
+							"childImageUpdate": {
+								"index": idx,
+								"image": child_image
+							}
+						}
+					}),
+				).await;
+				match &send_result {
+					Ok(()) => log::info!("[set_image] forwarded OK"),
+					Err(e) => log::warn!("[set_image] forward FAILED: {}", e),
+				}
+			}
+			// Child: locks dropped, skip save, return early
+			return Ok(());
+			}
 	}
 
 	if !skip {
@@ -113,6 +207,27 @@ pub async fn set_image(mut event: ContextAndPayloadEvent<SetImagePayload>) -> Re
 	Ok(())
 }
 
+/// Per-context last-emit timestamp for throttling the webview preview emit
+/// on fast-path (full-canvas) updates. The device LCD is updated directly by
+/// the fast path at plugin rate (10Hz for claude-monitor); the webview preview
+/// in the OpenDeck GUI window doesn't need that rate — 1Hz is plenty for
+/// visualisation and drops ~90% of the webview allocation pressure.
+static FAST_PATH_PREVIEW_THROTTLE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> = std::sync::OnceLock::new();
+const FAST_PATH_PREVIEW_THROTTLE_MS: u64 = 1000;
+
+fn should_emit_fast_path_preview(context_str: &str) -> bool {
+	let map = FAST_PATH_PREVIEW_THROTTLE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+	let mut m = map.lock().unwrap();
+	let now = std::time::Instant::now();
+	if let Some(last) = m.get(context_str)
+		&& now.duration_since(*last) < std::time::Duration::from_millis(FAST_PATH_PREVIEW_THROTTLE_MS)
+	{
+		return false;
+	}
+	m.insert(context_str.to_owned(), now);
+	true
+}
+
 /// Merge a setFeedback payload into the instance's persistent feedback state
 /// and notify the frontend to re-render the layout. Keys not present in the
 /// current layout are still stored (they have no visual effect, but the spec
@@ -120,10 +235,65 @@ pub async fn set_image(mut event: ContextAndPayloadEvent<SetImagePayload>) -> Re
 pub async fn set_feedback(event: ContextAndPayloadEvent<serde_json::Value>) -> Result<(), anyhow::Error> {
 	let mut locks = acquire_locks_mut().await;
 	if let Some(instance) = get_instance_mut(&event.context, &mut locks).await? {
+		crate::plugin_telemetry::record("set_feedback", &instance.action.plugin);
 		merge_feedback(&mut instance.feedback, event.payload);
 		let snapshot = instance.clone();
 		drop(locks);
-		emit_feedback_changed(&snapshot);
+		// Fast path: plugins that pre-render a full-screen 200x100 PNG and
+		// push it in `full-canvas` don't need the webview compositor -- the
+		// image is already final. Push it straight to the device alongside
+		// the frontend notification so preview updates in parallel but the
+		// device no longer waits on a webview round-trip (compose + encode +
+		// IPC back). Partial-update plugins (title / bar / value / icon)
+		// still fall through to the compositor because those payloads need
+		// items merged into a layout before reaching device-ready pixels.
+		let took_fast_path = snapshot
+			.feedback
+			.get("full-canvas")
+			.and_then(|v| v.as_str())
+			.map(|s| s.starts_with("data:"))
+			.unwrap_or(false);
+
+		if let Some(full_canvas) = snapshot.feedback.get("full-canvas").and_then(|v| v.as_str())
+			&& full_canvas.starts_with("data:")
+		{
+			let ctx_str = snapshot.context.to_string();
+			let was_warming = crate::events::outbound::will_appear::clear_warming_up(&ctx_str).await;
+			if was_warming {
+				log::info!("[enc-tel] FAST_PATH_SKIP_WARMUP ctx={}", ctx_str);
+			} else {
+				let context = snapshot.context.clone();
+				let image = full_canvas.to_owned();
+				tokio::spawn(async move {
+					let ctx: crate::shared::Context = context.into();
+					let selected = crate::store::profiles::DEVICE_STORES.write().await
+						.get_selected_profile(&ctx.device).ok();
+					if selected.as_deref() != Some(&ctx.profile) {
+						log::info!("[enc-tel] FAST_PATH_BLOCKED_PROFILE ctx_profile={} selected={:?}", ctx.profile, selected);
+						return;
+					}
+					log::info!("[enc-tel] FAST_PATH_PUSH pos={}", ctx.position);
+					if let Err(error) = crate::events::outbound::devices::update_image(ctx, Some(image)).await {
+						log::warn!("Failed to fast-path full-canvas image: {}", error);
+					}
+				});
+			}
+		}
+
+		// Webview preview emit throttle. For fast-path full-canvas pushes, the
+		// device LCD is already updated directly at plugin rate. The webview
+		// preview in the OpenDeck GUI window doesn't need that rate — throttle
+		// to 1Hz per context to drop allocation pressure on the webview.
+		// Non-fast-path updates (partial: title/bar/indicator) still emit at
+		// every change because the webview compositor owns the device update.
+		let should_emit = if took_fast_path {
+			should_emit_fast_path_preview(&snapshot.context.to_string())
+		} else {
+			true
+		};
+		if should_emit {
+			emit_feedback_changed(&snapshot);
+		}
 	}
 	Ok(())
 }
@@ -132,6 +302,12 @@ pub async fn set_feedback(event: ContextAndPayloadEvent<serde_json::Value>) -> R
 /// state (spec-level keys differ per layout so stale state would be wrong),
 /// and notify the frontend.
 pub async fn set_feedback_layout(event: ContextAndPayloadEvent<serde_json::Value>) -> Result<(), anyhow::Error> {
+	{
+		let mut locks = acquire_locks_mut().await;
+		if let Some(instance) = get_instance_mut(&event.context, &mut locks).await? {
+			crate::plugin_telemetry::record("set_feedback_layout", &instance.action.plugin);
+		}
+	}
 	let layout_id = match &event.payload {
 		serde_json::Value::String(s) => s.clone(),
 		serde_json::Value::Object(obj) => obj.get("layout").and_then(|v| v.as_str()).map(str::to_owned).unwrap_or_default(),
@@ -166,8 +342,13 @@ fn emit_feedback_changed(instance: &crate::shared::ActionInstance) {
 	use tauri::{Emitter, Manager};
 	let Some(app) = crate::APP_HANDLE.get() else { return };
 	let Some(window) = app.get_webview_window("main") else { return };
+	// Per-context event name so Tauri delivers only to the specific Key that owns
+	// this context, instead of broadcasting to every Key listener. Dramatically
+	// cuts allocation pressure — N-listener × payload-size reduces to 1 × payload.
+	// Tauri event names disallow dots, so replace context's "." separators with ":".
+	let event_name = format!("feedback_changed::{}", instance.context.to_string().replace('.', ":"));
 	let _ = window.emit(
-		"feedback_changed",
+		&event_name,
 		serde_json::json!({
 			"context": instance.context.to_string(),
 			"plugin": instance.action.plugin,
@@ -181,6 +362,7 @@ pub async fn set_state(event: ContextAndPayloadEvent<SetStatePayload>) -> Result
 	let mut locks = acquire_locks_mut().await;
 
 	if let Some(instance) = get_instance_mut(&event.context, &mut locks).await? {
+		crate::plugin_telemetry::record("set_state", &instance.action.plugin);
 		if event.payload.state >= instance.states.len() as u16 {
 			return Ok(());
 		}

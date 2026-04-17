@@ -17,8 +17,9 @@
 	import { settings } from "$lib/settings";
 
 	import { invoke } from "@tauri-apps/api/core";
-	import { listen } from "@tauri-apps/api/event";
-	import { tick } from "svelte";
+	import { trackedListen as listen } from "$lib/telemetry";
+	import { recordEventReceived, recordReactiveRun, trackAssign, getLastAssignedVar, markInFlightEnter, markInFlightExit } from "$lib/telemetry";
+	import { onDestroy, tick, beforeUpdate, afterUpdate, onMount } from "svelte";
 
 	export let context: Context | null;
 	export let label: string = "";
@@ -28,40 +29,69 @@
 	// One-way binding for slot data.
 	export let inslot: ActionInstance | null;
 	let slot: ActionInstance | null;
+	let prevSlotContext: string | null = null;
 	const update = (inslot: ActionInstance | null) => {
 		if (inslot && context && inslot.context.split(".")[0] != context.device) return;
-		slot = inslot;
+		const newCtx = inslot?.context ?? null;
+		if (newCtx !== prevSlotContext && context?.controller === "Encoder" && inslot) {
+			awaitingFirstFeedback = trackAssign("awaitingFirstFeedback", true);
+			initialRenderDone = trackAssign("initialRenderDone", false);
+		}
+		prevSlotContext = trackAssign("prevSlotContext", newCtx);
+		slot = trackAssign("slot.fromUpdate", inslot);
 	};
-	$: update(inslot);
+	$: { recordReactiveRun("Key.update"); update(inslot); }
 
 	export let active: boolean = true;
 	export let scale: number = 1;
 	export let isTouchPoint: boolean = false;
 	export let encoderStrip: boolean = false;
+	export let dragHighlight: "empty" | "occupied" | "hovered" | "incompatible" | null = null;
 	export let encoderPosition: number = 0;
 	export let encoderCount: number = 4;
 	let pressed: boolean = false;
 
 	let state: ActionState | undefined;
 	$: {
+		recordReactiveRun("Key.state");
 		if (!slot) {
-			state = undefined;
+			state = trackAssign("state", undefined);
 		} else {
-			state = slot.states[slot.current_state];
+			state = trackAssign("state", slot.states[slot.current_state]);
 		}
 	}
 
-	listen("update_state", ({ payload }: { payload: { context: string; contents: ActionInstance | null } }) => {
-		if (payload.context == slot?.context) slot = payload.contents;
+	// Per-context event name: Rust emits to `update_state::${ctx}` so this
+	// Key receives only events for its own context. No broadcast waste.
+	// Key's context prop has {device, profile, controller, position}; the full
+	// backend context includes `.{index}` — main slots are always index 0.
+	// Tauri event names disallow dots, so ":" is used as separator to match backend.
+	const ownContextString = context
+		? `${context.device}:${context.profile}:${context.controller}:${context.position}:0`
+		: "";
+	const unlistenUpdateState = listen(`update_state::${ownContextString}`, ({ payload }: { payload: { context: string; contents: ActionInstance | null } }) => {
+		recordEventReceived("update_state");
+		if (payload.context == slot?.context) slot = trackAssign("slot.fromUpdateState", payload.contents);
 	});
 
 	// Plugin updates to setFeedback / setFeedbackLayout are broadcast from the
 	// backend so any encoder slot listening for its own context can re-render
 	// the layout and push the resulting pixmap to the device.
 	type FeedbackEvent = { context: string; plugin: string; layout: string | null; feedback: Record<string, unknown> | null };
-	listen("feedback_changed", async ({ payload }: { payload: FeedbackEvent }) => {
+	// After a profile switch, suppress device pushes until the plugin sends
+	// its first real setFeedback. One initial render (stale image) is allowed
+	// so the user sees which page they're on, then further renders are held
+	// until the plugin is live. Prevents the multi-frame flash during the
+	// gap between willAppear and the plugin's first push.
+	let awaitingFirstFeedback = false;
+	let initialRenderDone = false;
+	const unlistenFeedbackChanged = listen(`feedback_changed::${ownContextString}`, async ({ payload }: { payload: FeedbackEvent }) => {
+		recordEventReceived("feedback_changed");
 		if (!slot || payload.context !== slot.context) return;
-		slot = { ...slot, feedback_layout: payload.layout ?? slot.feedback_layout, feedback: payload.feedback ?? undefined };
+		if (awaitingFirstFeedback && payload.feedback) {
+			awaitingFirstFeedback = trackAssign("awaitingFirstFeedback", false);
+		}
+		slot = trackAssign("slot.fromFeedback", { ...slot, feedback_layout: payload.layout ?? slot.feedback_layout, feedback: payload.feedback ?? undefined });
 	});
 
 	// Resolve the current layout definition. Built-ins are defined client-side;
@@ -79,17 +109,22 @@
 			return null;
 		}
 	}
-	$: if (slot && context?.controller === "Encoder" && slot.feedback_layout !== resolvedLayoutId) {
+	// Per Elgato SDK, encoder feedback renders via a layout. When the slot
+	// has no layout set (plugin manifest omitted Encoder.layout, or a key
+	// action was dropped on an encoder slot), fall back to the built-in
+	// $X1 "Icon" layout so the LCD shows title+icon unstretched.
+	$: if (slot && context?.controller === "Encoder" && (slot.feedback_layout ?? "$X1") !== resolvedLayoutId) {
+		recordReactiveRun("Key.layoutResolve");
 		const pluginId = slot.action.plugin;
-		const layoutId = slot.feedback_layout ?? null;
-		resolvedLayoutId = layoutId;
+		const layoutId = slot.feedback_layout ?? "$X1";
+		resolvedLayoutId = trackAssign("resolvedLayoutId", layoutId);
 		resolveLayout(pluginId, layoutId).then((layout) => {
-			if (resolvedLayoutId === layoutId) resolvedLayout = layout;
+			if (resolvedLayoutId === layoutId) resolvedLayout = trackAssign("resolvedLayout", layout);
 		});
 	}
 
-	listen("key_moved", ({ payload }: { payload: { context: Context; pressed: boolean } }) => {
-		if (JSON.stringify(context) == JSON.stringify(payload.context)) pressed = payload.pressed;
+	const unlistenKeyMoved = listen("key_moved", ({ payload }: { payload: { context: Context; pressed: boolean } }) => {
+		if (JSON.stringify(context) == JSON.stringify(payload.context)) pressed = trackAssign("pressed", payload.pressed);
 	});
 
 	function select(event: MouseEvent | KeyboardEvent) {
@@ -134,7 +169,7 @@
 	let showEditor = false;
 	function edit() {
 		$openContextMenu = null;
-		showEditor = true;
+		showEditor = trackAssign("showEditor.true", true);
 	}
 
 	function copy() {
@@ -162,7 +197,7 @@
 		$openContextMenu = null;
 		if (!slot) return;
 		await invoke("remove_instance", { context: slot.context });
-		showEditor = false;
+		showEditor = trackAssign("showEditor.false", false);
 		slot = null;
 		inslot = slot;
 		await tick();
@@ -172,32 +207,99 @@
 	let showAlert: boolean = false;
 	let showOk: boolean = false;
 	let timeouts: number[] = [];
-	listen("show_alert", ({ payload }: { payload: string }) => {
+	const unlistenShowAlert = listen("show_alert", ({ payload }: { payload: string }) => {
 		if (!slot || payload != slot.context) return;
 		timeouts.forEach(clearTimeout);
-		showOk = false;
-		showAlert = true;
-		timeouts.push(setTimeout(() => showAlert = false, 1.5e3));
+		showOk = trackAssign("showOk.false.alert", false);
+		showAlert = trackAssign("showAlert.true", true);
+		timeouts.push(setTimeout(() => showAlert = trackAssign("showAlert.false.timeout", false), 1.5e3));
 	});
-	listen("show_ok", ({ payload }: { payload: string }) => {
+	const unlistenShowOk = listen("show_ok", ({ payload }: { payload: string }) => {
 		if (!slot || payload != slot.context) return;
 		timeouts.forEach(clearTimeout);
-		showAlert = false;
-		showOk = true;
-		timeouts.push(setTimeout(() => showOk = false, 1.5e3));
+		showAlert = trackAssign("showAlert.false.ok", false);
+		showOk = trackAssign("showOk.true", true);
+		timeouts.push(setTimeout(() => showOk = trackAssign("showOk.false.timeout", false), 1.5e3));
+	});
+
+	onDestroy(async () => {
+		(await unlistenUpdateState)();
+		(await unlistenFeedbackChanged)();
+		(await unlistenKeyMoved)();
+		(await unlistenShowAlert)();
+		(await unlistenShowOk)();
 	});
 
 	let canvas: HTMLCanvasElement;
+	let previewComposeCanvas: HTMLCanvasElement | undefined;
 	let lock = new CanvasLock();
 	export let size = 144;
+	// Instrumentation to find the 1200/sec untracked trigger.
+	// Each prop/store gets its own reactive block — Svelte fires these only
+	// when that specific dep changes. Rates tell us which dep is changing 1200/sec.
+	// Svelte lifecycle hooks — count every component update cycle
+	beforeUpdate(() => recordReactiveRun("Key.lifecycle.beforeUpdate"));
+	afterUpdate(() => recordReactiveRun("Key.lifecycle.afterUpdate"));
+	onMount(() => recordReactiveRun("Key.lifecycle.mount"));
+	onDestroy(() => recordReactiveRun("Key.lifecycle.destroy"));
+
+	// Every prop gets its own reactive tracker
+	$: { recordReactiveRun("Key.prop.context"); context; }
+	$: { recordReactiveRun("Key.prop.label"); label; }
+	$: { recordReactiveRun("Key.prop.tabindex"); tabindex; }
+	$: { recordReactiveRun("Key.prop.role"); role; }
+	$: { recordReactiveRun("Key.prop.inslot"); inslot; }
+	$: { recordReactiveRun("Key.prop.active"); active; }
+	$: { recordReactiveRun("Key.prop.scale"); scale; }
+	$: { recordReactiveRun("Key.prop.isTouchPoint"); isTouchPoint; }
+	$: { recordReactiveRun("Key.prop.encoderStrip"); encoderStrip; }
+	$: { recordReactiveRun("Key.prop.dragHighlight"); dragHighlight; }
+	$: { recordReactiveRun("Key.prop.encoderPosition"); encoderPosition; }
+	$: { recordReactiveRun("Key.prop.encoderCount"); encoderCount; }
+	$: { recordReactiveRun("Key.prop.handlePaste"); handlePaste; }
+	$: { recordReactiveRun("Key.prop.size"); size; }
+
+	// Every component-local reactive let gets its own tracker
+	$: { recordReactiveRun("Key.local.slot"); slot; }
+	$: { recordReactiveRun("Key.local.prevSlotContext"); prevSlotContext; }
+	$: { recordReactiveRun("Key.local.pressed"); pressed; }
+	$: { recordReactiveRun("Key.local.state"); state; }
+	$: { recordReactiveRun("Key.local.awaitingFirstFeedback"); awaitingFirstFeedback; }
+	$: { recordReactiveRun("Key.local.initialRenderDone"); initialRenderDone; }
+	$: { recordReactiveRun("Key.local.resolvedLayout"); resolvedLayout; }
+	$: { recordReactiveRun("Key.local.resolvedLayoutId"); resolvedLayoutId; }
+	$: { recordReactiveRun("Key.local.contextMenuEl"); contextMenuEl; }
+	$: { recordReactiveRun("Key.local.showEditor"); showEditor; }
+	$: { recordReactiveRun("Key.local.showAlert"); showAlert; }
+	$: { recordReactiveRun("Key.local.showOk"); showOk; }
+	$: { recordReactiveRun("Key.local.timeouts"); timeouts; }
+	$: { recordReactiveRun("Key.local.canvas"); canvas; }
+	$: { recordReactiveRun("Key.local.previewComposeCanvas"); previewComposeCanvas; }
+	$: { recordReactiveRun("Key.local.lock"); lock; }
+	$: { recordReactiveRun("Key.local.accessibleLabel"); accessibleLabel; }
+
+	// Every store read gets its own tracker
+	$: { recordReactiveRun("Key.store.settings"); $settings; }
+	$: { recordReactiveRun("Key.store.openContextMenu"); $openContextMenu; }
+	$: { recordReactiveRun("Key.store.inspectedInstance"); $inspectedInstance; }
 	$: (async () => {
+		recordReactiveRun("Key.render");
+		recordReactiveRun(`Key.render.trigger.${getLastAssignedVar()}`);
+		markInFlightEnter("Key.render");
+		try {
 		const sl = structuredClone(slot);
 		if (!sl) {
 			const unlock = await lock.lock();
 			try {
 				const ctx = canvas?.getContext("2d");
 				if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
-				if (active) await invoke("update_image", { context, image: null });
+				// Encoder slots: profile switch already calls clear_screen
+				// on the backend. Individual null pushes here are redundant
+				// and cause flash when they race with the new profile's
+				// plugin pushing real content via the fast path.
+				if (active && context?.controller !== "Encoder") {
+					await invoke("update_image", { context, image: null });
+				}
 			} finally {
 				unlock();
 			}
@@ -210,19 +312,54 @@
 			const unlock = await lock.lock();
 			try {
 				const feedback = { ...(sl.feedback ?? {}) } as Record<string, unknown>;
+				// Populate the $X1 "icon" slot from the action's state image
+				// when no feedback has been pushed yet. This matches Elgato's
+				// default rendering of the user-assigned icon for key-style
+				// encoder layouts. Other layouts ($A0 canvas, $B1 indicator,
+				// etc.) are plugin-driven -- the plugin is expected to push
+				// setFeedback with the keys it wants populated.
 				if (feedback.icon == null) {
 					const fallback = sl.action.states[sl.current_state]?.image ?? sl.action.icon;
 					if (fallback) feedback.icon = fallback;
 				}
 				if (feedback.title == null && state?.text) feedback.title = state.text;
-				await renderFeedback(canvas, resolvedLayout, feedback);
-				if (active) {
-					await invoke("update_image", { context, image: canvas.toDataURL("image/png") });
+				const isFullCanvasFastPath =
+					typeof feedback["full-canvas"] === "string" &&
+					(feedback["full-canvas"] as string).startsWith("data:");
+				const shouldPushDevice = !awaitingFirstFeedback || !initialRenderDone;
+				if (context?.controller === "Encoder") {
+					console.log(`[enc-tel] FRONTEND ctx=${slot?.context} fastPath=${isFullCanvasFastPath} shouldPush=${shouldPushDevice} awaiting=${awaitingFirstFeedback} initDone=${initialRenderDone} hasFullCanvas=${"full-canvas" in feedback}`);
 				}
+				if (isFullCanvasFastPath) {
+					if (!previewComposeCanvas) previewComposeCanvas = trackAssign("previewComposeCanvas", document.createElement("canvas"));
+					await renderFeedback(previewComposeCanvas, resolvedLayout, feedback);
+					const ctx = canvas?.getContext("2d");
+					if (ctx) {
+						// NOTE: do NOT set canvas.width/height here — Svelte 4 treats
+						// `canvas.width = X` in the script as a mutation and invalidates
+						// canvas, triggering the reactive block to re-run, causing a
+						// self-amplifying ~2254/sec render loop. Template attributes
+						// width=200 height=100 already size the element. clearRect + scaled
+						// drawImage achieves the same visual effect without the invalidation.
+						ctx.clearRect(0, 0, canvas.width, canvas.height);
+						ctx.drawImage(previewComposeCanvas, 0, 0, canvas.width, canvas.height);
+					}
+				} else {
+					await renderFeedback(canvas, resolvedLayout, feedback);
+					if (active && shouldPushDevice) {
+						if (context?.controller === "Encoder") console.log(`[enc-tel] FRONTEND_PUSH_DEVICE pos=${context.position}`);
+						await invoke("update_image", { context, image: canvas.toDataURL("image/png") });
+					}
+				}
+				if (awaitingFirstFeedback && !initialRenderDone) initialRenderDone = trackAssign("initialRenderDone", true);
 			} finally {
 				unlock();
 			}
-		} else {
+		} else if (context?.controller !== "Encoder") {
+			// Non-encoder slots: render via renderImage (key-style full-square).
+			// Encoder slots skip this branch entirely -- they wait for layout
+			// resolution before rendering. The backend fast path handles device
+			// updates in the meantime, so the encoder LCD isn't blank.
 			const unlock = await lock.lock();
 			try {
 				let fallback = sl.action.states[sl.current_state]?.image ?? sl.action.icon;
@@ -231,13 +368,17 @@
 				unlock();
 			}
 		}
+		} finally {
+			markInFlightExit("Key.render");
+		}
 	})();
 
 	function clearAndRedraw() {
 		canvas?.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
-		slot = slot;
+		slot = trackAssign("slot.clearAndRedraw", slot);
 	}
 	$: if ($settings?.rotation != undefined) {
+		recordReactiveRun("Key.rotation");
 		clearAndRedraw();
 	}
 
@@ -246,14 +387,19 @@
 		await invoke("trigger_virtual_press", { context });
 	}
 
-	$: accessibleLabel = label + (slot ? ": " + slot.action.name + (state?.show && state?.text ? " - " + state.text : "") : "");
+	let accessibleLabel: string;
+	$: { recordReactiveRun("Key.accessibleLabel"); accessibleLabel = label + (slot ? ": " + slot.action.name + (state?.show && state?.text ? " - " + state.text : "") : ""); }
 </script>
 
 {#if encoderStrip}
 	<div class="flex-1 relative" style="aspect-ratio: 2 / 1; z-index: {slot && $inspectedInstance == slot.context ? 10 : 0};">
 		<canvas
 			bind:this={canvas}
-			class="absolute inset-0 w-full h-full border-neutral-700 outline-none outline-offset-2 outline-blue-500"
+			class="absolute inset-0 w-full h-full outline-none outline-offset-2 outline-blue-500 transition-colors duration-150"
+			class:border-neutral-700={!dragHighlight || dragHighlight === "incompatible"}
+			class:border-green-500={dragHighlight === "empty"}
+			class:border-orange-500={dragHighlight === "occupied"}
+			class:border-blue-400={dragHighlight === "hovered"}
 			class:border-y-3={true}
 			class:border-l-3={encoderPosition === 0}
 			class:border-r-3={encoderPosition === encoderCount - 1}
@@ -261,7 +407,7 @@
 			class:border-r-[1.5px]={encoderPosition < encoderCount - 1}
 			class:rounded-l-xl={encoderPosition === 0}
 			class:rounded-r-xl={encoderPosition === encoderCount - 1}
-			class:outline-solid={active && ((slot && $inspectedInstance == slot.context) || (context && $inspectedInstance == context))}
+			class:outline-solid={active && !dragHighlight && ((slot && $inspectedInstance == slot.context) || (context && $inspectedInstance == context))}
 			class:bg-black={slot != null}
 			width={200}
 			height={100}
@@ -271,6 +417,7 @@
 			aria-label={accessibleLabel}
 			on:dragstart
 			on:dragover
+			on:dragleave
 			on:drop
 			on:click|stopPropagation={select}
 			on:dblclick|stopPropagation={triggerVirtualPress}
@@ -293,14 +440,23 @@
 	</div>
 {:else}
 	<div
-		class="relative"
+		class="relative transition-all duration-150"
+		class:opacity-30={dragHighlight === "incompatible"}
+		class:brightness-125={dragHighlight === "hovered"}
+		class:scale-110={dragHighlight === "hovered"}
 		style={`transform: scale(${(112 /* desired inner size */ / size) * scale});`}
 	>
 		<canvas
 			bind:this={canvas}
-			class="relative border-3 border-neutral-700 rounded-3xl outline-none outline-offset-2 outline-blue-500"
+			class="relative border-3 rounded-3xl outline-none transition-colors duration-150"
+			class:border-neutral-700={!dragHighlight || dragHighlight === "incompatible"}
+			class:border-green-500={dragHighlight === "empty"}
+			class:border-orange-500={dragHighlight === "occupied"}
+			class:border-blue-400={dragHighlight === "hovered"}
 			style={`margin: ${-((size + 3 * 2 /* border */ - 132 /* desired outer size */) / 2)}px;`}
-			class:outline-solid={active && ((slot && $inspectedInstance == slot.context) || (context && $inspectedInstance == context))}
+			class:outline-solid={active && !dragHighlight && ((slot && $inspectedInstance == slot.context) || (context && $inspectedInstance == context))}
+			class:outline-offset-2={true}
+			class:outline-blue-500={!dragHighlight}
 			class:rounded-full!={context?.controller == "Encoder"}
 			class:bg-black={slot != null}
 			width={size}
@@ -311,6 +467,7 @@
 			aria-label={accessibleLabel}
 			on:dragstart
 			on:dragover
+			on:dragleave
 			on:drop
 			on:click|stopPropagation={select}
 			on:dblclick|stopPropagation={triggerVirtualPress}

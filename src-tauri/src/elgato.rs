@@ -170,6 +170,20 @@ async fn init(device: AsyncStreamDeck, device_id: String) {
 			Err(_) => break,
 		};
 		for update in updates {
+			{
+				use std::time::SystemTime;
+				let ms = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis();
+				match &update {
+					DeviceStateUpdate::TouchScreenPress(x, y) => log::info!("[touch] t={} PRESS x={} y={} enc={}", ms, x, y, x / 200),
+					DeviceStateUpdate::TouchScreenLongPress(x, y) => log::info!("[touch] t={} LONGPRESS x={} y={} enc={}", ms, x, y, x / 200),
+					DeviceStateUpdate::TouchScreenSwipe(from, to) => log::info!("[touch] t={} SWIPE from=({},{}) to=({},{}) enc={}->{}  dx={} dy={}", ms, from.0, from.1, to.0, to.1, from.0/200, to.0/200, (to.0 as i32)-(from.0 as i32), (to.1 as i32)-(from.1 as i32)),
+					DeviceStateUpdate::EncoderDown(dial) => log::info!("[touch] t={} ENC_DOWN dial={}", ms, dial),
+					DeviceStateUpdate::EncoderUp(dial) => log::info!("[touch] t={} ENC_UP dial={}", ms, dial),
+					DeviceStateUpdate::TouchPointDown(p) => log::info!("[touch] t={} TPOINT_DOWN {}", ms, p),
+					DeviceStateUpdate::TouchPointUp(p) => log::info!("[touch] t={} TPOINT_UP {}", ms, p),
+					_ => {}
+				}
+			}
 			match match update {
 				DeviceStateUpdate::ButtonDown(key) => inbound::devices::key_down(press(key)).await,
 				DeviceStateUpdate::ButtonUp(key) => inbound::devices::key_up(press(key)).await,
@@ -180,7 +194,7 @@ async fn init(device: AsyncStreamDeck, device_id: String) {
 				DeviceStateUpdate::EncoderUp(dial) => inbound::devices::encoder_up(press(dial)).await,
 				DeviceStateUpdate::TouchScreenPress(x, y) => inbound::devices::touch_tap(touch(x, y, false)).await,
 				DeviceStateUpdate::TouchScreenLongPress(x, y) => inbound::devices::touch_tap(touch(x, y, true)).await,
-				DeviceStateUpdate::TouchScreenSwipe(_from, _to) => Ok(()), // Swipe not mapped to SDK event yet
+				DeviceStateUpdate::TouchScreenSwipe(from, to) => inbound::devices::touch_swipe(device_id.clone(), from, to).await,
 			} {
 				Ok(_) => (),
 				Err(error) => log::warn!("Failed to process device event {update:?}: {error}"),

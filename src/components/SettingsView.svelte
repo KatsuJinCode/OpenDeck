@@ -9,12 +9,13 @@
 
 	import { invoke } from "@tauri-apps/api/core";
 	import { listen } from "@tauri-apps/api/event";
+	import { onDestroy } from "svelte";
 
 	let showPopup: boolean;
 	let buildInfo: string;
 	(async () => buildInfo = await invoke("get_build_info"))();
 
-	listen("device_brightness", ({ payload }: { payload: { action: string; value: number } }) => {
+	const unlistenDeviceBrightness = listen("device_brightness", ({ payload }: { payload: { action: string; value: number } }) => {
 		if (!$settings) return;
 		let value = $settings.brightness;
 		switch (payload.action) {
@@ -29,6 +30,10 @@
 				break;
 		}
 		$settings.brightness = Math.max(0, Math.min(100, value));
+	});
+
+	onDestroy(async () => {
+		(await unlistenDeviceBrightness)();
 	});
 </script>
 
