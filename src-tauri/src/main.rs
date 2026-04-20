@@ -334,8 +334,18 @@ If you have already donated, thank you so much for your support!"#,
 						if args.len() > pos + 1 {
 							let app = app.clone();
 							let plugin_id = args[pos + 1].clone();
-							std::thread::spawn(move || {
-								tauri::async_runtime::block_on(frontend::plugins::reload_plugin(app, plugin_id));
+							// MUST spawn on tauri's async runtime (tokio worker threads that
+							// live as long as the app), NOT std::thread::spawn + block_on.
+							// Rationale: `initialise_plugin` forks a child process with
+							// PR_SET_PDEATHSIG=SIGTERM. Per prctl(2), PDEATHSIG fires when
+							// the THREAD that forked the child exits — not when the parent
+							// process exits. A std::thread that dies the moment block_on
+							// returns kills the new plugin child a few milliseconds later.
+							// Observed empirically: plugin spawned with valid PID, then
+							// SIGTERM'd before it could exec. Use async_runtime so the
+							// forking thread (a tokio worker) outlives the child.
+							tauri::async_runtime::spawn(async move {
+								frontend::plugins::reload_plugin(app, plugin_id).await;
 							});
 						}
 					} else if let Some(pos) = args.iter().position(|x| x.to_lowercase().trim() == "--sleep-device") {
@@ -389,6 +399,9 @@ If you have already donated, thank you so much for your support!"#,
 			tokio::spawn(elgato::reset_devices());
 			use tauri_plugin_aptabase::EventTracker;
 			app.flush_events_blocking();
+			// Telemetry AFTER flush so a slow /proc scan on a busy system
+			// can't make the aptabase flush race its grace window.
+			plugins::log_orphan_plugin_telemetry("post-shutdown");
 		}
 	});
 }

@@ -105,14 +105,14 @@ pub async fn install_plugin(app: AppHandle, url: Option<String>, file: Option<St
 	if let Err(error) = crate::zip_extract::extract(std::io::Cursor::new(bytes), &config_dir.join("plugins")) {
 		log::error!("Failed to unzip file: {}", error);
 		let _ = fs::rename(&temp, &actual).await;
-		let _ = crate::plugins::initialise_plugin(&actual).await;
+		let _ = crate::plugins::initialise_plugin(&actual, true).await;
 		return Err(anyhow::Error::from(error).into());
 	}
-	if let Err(error) = crate::plugins::initialise_plugin(&actual).await {
+	if let Err(error) = crate::plugins::initialise_plugin(&actual, true).await {
 		log::warn!("Failed to initialise plugin at {}: {}", actual.display(), error);
 		let _ = fs::remove_dir_all(&actual).await;
 		let _ = fs::rename(&temp, &actual).await;
-		let _ = crate::plugins::initialise_plugin(&actual).await;
+		let _ = crate::plugins::initialise_plugin(&actual, true).await;
 		return Err(error.into());
 	}
 	let _ = fs::remove_dir_all(config_dir.join("temp")).await;
@@ -152,21 +152,32 @@ pub async fn remove_plugin(app: AppHandle, id: String) -> Result<(), Error> {
 
 #[command]
 pub async fn reload_plugin(app: AppHandle, id: String) {
-	let _ = crate::plugins::deactivate_plugin(&app, &id).await;
-	let _ = crate::plugins::initialise_plugin(&config_dir().join("plugins").join(&id)).await;
+	log::info!("[reload_plugin] start id={id}");
+	match crate::plugins::deactivate_plugin(&app, &id).await {
+		Ok(()) => log::info!("[reload_plugin] deactivate ok id={id}"),
+		Err(e) => log::info!("[reload_plugin] deactivate skipped id={id}: {e:#}"),
+	}
+	match crate::plugins::initialise_plugin(&config_dir().join("plugins").join(&id), true).await {
+		Ok(()) => log::info!("[reload_plugin] initialise ok id={id}"),
+		Err(e) => log::error!("[reload_plugin] initialise FAILED id={id}: {e:#}"),
+	}
 
 	let locks = acquire_locks().await;
 	let all = locks.profile_stores.all_from_plugin(&id);
+	log::info!("[reload_plugin] re-firing will_appear for {} context(s) of {id}", all.len());
 
 	for context in all {
 		if let Ok(Some(instance)) = get_instance(&context, &locks).await {
-			let _ = crate::events::outbound::will_appear::will_appear(instance).await;
+			if let Err(e) = crate::events::outbound::will_appear::will_appear(instance).await {
+				log::warn!("[reload_plugin] will_appear failed for context {context}: {e:#}");
+			}
 		}
 	}
 
 	if let Some(window) = app.get_webview_window("main") {
 		let _ = window.emit("plugin_reloaded", &id);
 	}
+	log::info!("[reload_plugin] done id={id}");
 }
 
 #[command]

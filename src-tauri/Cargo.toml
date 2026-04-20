@@ -55,5 +55,8 @@ font-loader = "0.11"
 [target.'cfg(windows)'.dependencies]
 windows-sys = "0.61"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [features]
 custom-protocol = ["tauri/custom-protocol"]
