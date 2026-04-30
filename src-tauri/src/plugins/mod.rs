@@ -62,8 +62,6 @@ impl Drop for SpawnClaimGuard<'_> {
 /// immediately. Linux-only — other platforms have no /proc to scan.
 #[cfg(target_os = "linux")]
 pub fn log_orphan_plugin_telemetry(phase: &'static str) {
-	use std::io::Write;
-
 	let self_pid = std::process::id();
 	let mut orphans: Vec<(u32, u32, String, u64)> = Vec::new();
 
@@ -118,20 +116,12 @@ pub fn log_orphan_plugin_telemetry(phase: &'static str) {
 		return;
 	}
 
-	let state_dir = std::env::var_os("XDG_STATE_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/state"));
-	let dir = state_dir.join("opendeck");
-	let _ = fs::create_dir_all(&dir);
-	let log_path = dir.join("orphan-plugin-telemetry.jsonl");
-	let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&log_path) else { return };
-
-	let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+	// File persistence (orphan-plugin-telemetry.jsonl) was removed 2026-04-29
+	// per the no-regular-disk-writes policy. The condition below is a
+	// PDEATHSIG regression — visible via `pgrep -af sdPlugin` independently of
+	// any log. We still emit a warn so it shows up when debug logging is on.
 	for (pid, ppid, uuid, rss_kb) in &orphans {
-		let line = format!(
-			r#"{{"ts":{},"phase":"{}","opendeck_pid":{},"pid":{},"ppid":{},"uuid":"{}","rss_kb":{}}}"#,
-			ts, phase, self_pid, pid, ppid, uuid.replace('"', "\\\""), rss_kb
-		);
-		let _ = writeln!(file, "{}", line);
-		log::warn!("Orphan plugin telemetry ({}): pid={} uuid={} rss_kb={} (ppid={}, not this opendeck {})", phase, pid, uuid, rss_kb, ppid, self_pid);
+		log::warn!("Orphan plugin ({}): pid={} uuid={} rss_kb={} (ppid={}, not this opendeck {})", phase, pid, uuid, rss_kb, ppid, self_pid);
 	}
 }
 

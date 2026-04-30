@@ -124,6 +124,14 @@ pub struct Settings {
 	pub disableelgato: bool,
 	#[serde(default)]
 	pub skip_persistence_default: bool,
+	/// Unix-seconds timestamp at which debug logging auto-disables. None = off.
+	/// Persisted across restarts; the timestamp itself is the source of truth.
+	#[serde(default)]
+	pub debug_log_until_ts: Option<u64>,
+	/// Permanent override — only set when the user explicitly chose "permanent"
+	/// in the UI or `--debug-log=permanent` is in argv. Never auto-clears.
+	#[serde(default)]
+	pub debug_log_permanent: bool,
 }
 
 impl Default for Settings {
@@ -143,6 +151,8 @@ impl Default for Settings {
 			developer: false,
 			disableelgato: false,
 			skip_persistence_default: false,
+			debug_log_until_ts: None,
+			debug_log_permanent: false,
 		}
 	}
 }

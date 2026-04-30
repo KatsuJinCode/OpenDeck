@@ -51,6 +51,33 @@ pub fn open_log_directory() -> Result<(), Error> {
 	Ok(())
 }
 
+/// Frontend handle for the debug-logging toggle. `mode` is one of:
+/// `"off"`, `"1h"`, `"4h"`, `"24h"`, `"permanent"`. Persists choice to
+/// settings and applies the log-level change in-process. See
+/// docs/DEBUG-LOGGING.md.
+#[command]
+pub async fn set_debug_log_window(mode: String) -> Result<(), Error> {
+	use std::time::{SystemTime, UNIX_EPOCH};
+	let mut store = match crate::store::get_settings() {
+		Ok(s) => s,
+		Err(e) => return Err(e.into()),
+	};
+	let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+	let (until, permanent) = match mode.as_str() {
+		"off" => (None, false),
+		"1h" => (Some(now + 3600), false),
+		"4h" => (Some(now + 4 * 3600), false),
+		"24h" => (Some(now + 24 * 3600), false),
+		"permanent" => (None, true),
+		other => return Err(anyhow::anyhow!("unknown debug-log mode: {other}").into()),
+	};
+	store.value.debug_log_until_ts = until;
+	store.value.debug_log_permanent = permanent;
+	store.save()?;
+	crate::debug_log_gate::reapply();
+	Ok(())
+}
+
 #[command]
 pub fn get_build_info() -> String {
 	format!(

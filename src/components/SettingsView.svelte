@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Heart from "phosphor-svelte/lib/Heart";
 	import Star from "phosphor-svelte/lib/Star";
+	import DiskIOIndicator from "./DiskIOIndicator.svelte";
 	import Popup from "./Popup.svelte";
 	import Tooltip from "./Tooltip.svelte";
 
@@ -14,6 +15,23 @@
 	let showPopup: boolean;
 	let buildInfo: string;
 	(async () => buildInfo = await invoke("get_build_info"))();
+
+	function debugLogMode(permanent: boolean, untilTs: number | null | undefined): string {
+		if (permanent) return "permanent";
+		if (typeof untilTs === "number" && untilTs > Date.now() / 1000) {
+			const remaining = untilTs - Math.floor(Date.now() / 1000);
+			if (remaining <= 1 * 3600 + 60) return "1h";
+			if (remaining <= 4 * 3600 + 60) return "4h";
+			if (remaining <= 24 * 3600 + 60) return "24h";
+			return "24h";
+		}
+		return "off";
+	}
+
+	function onDebugLogChange(event: Event) {
+		const target = event.currentTarget as HTMLSelectElement;
+		invoke("set_debug_log_window", { mode: target.value });
+	}
 
 	const unlistenDeviceBrightness = listen("device_brightness", ({ payload }: { payload: { action: string; value: number } }) => {
 		if (!$settings) return;
@@ -146,8 +164,30 @@
 		<div class="flex flex-row items-center m-2 space-x-2">
 			<label for="settings-skip_persistence_default" class="text-neutral-400">Skip image persistence by default:</label>
 			<input type="checkbox" bind:checked={$settings.skip_persistence_default} id="settings-skip_persistence_default" />
+			<DiskIOIndicator />
 			<Tooltip>
 				When enabled, dynamic images and titles are not written to disk by default. This reduces disk I/O for plugins that update frequently. On restart, plugins re-push their images automatically. You can override this per-slot by right-clicking any button and toggling "Skip disk writes". When disabled, all images are persisted normally and you can opt individual slots out via the same right-click menu.
+			</Tooltip>
+		</div>
+
+		<div class="flex flex-row items-center m-2 space-x-2">
+			<label for="settings-debug-log" class="text-neutral-400">Debug logging:</label>
+			<div class="select-wrapper">
+				<select
+					id="settings-debug-log"
+					class="w-40"
+					value={debugLogMode($settings.debug_log_permanent, $settings.debug_log_until_ts)}
+					on:change={onDebugLogChange}
+				>
+					<option value="off">Off (default)</option>
+					<option value="1h">On for 1 hour</option>
+					<option value="4h">On for 4 hours</option>
+					<option value="24h">On for 24 hours</option>
+					<option value="permanent">On — permanent</option>
+				</select>
+			</div>
+			<Tooltip>
+				When Off (default) OpenDeck writes nothing to disk except your profile and plugin-settings changes. The timed options enable verbose logging that auto-disables after the chosen window. "Permanent" never auto-disables and should only be used while actively reproducing a bug. See OpenDeck-fork/docs/DEBUG-LOGGING.md.
 			</Tooltip>
 		</div>
 	{/if}

@@ -27,7 +27,6 @@ pub async fn set_title(event: ContextAndPayloadEvent<SetTitlePayload>) -> Result
 	let mut skip = false;
 
 	if let Some(instance) = get_instance_mut(&event.context, &mut locks).await? {
-		crate::plugin_telemetry::record("set_title", &instance.action.plugin);
 		let global_default = crate::store::get_settings().map(|s| s.value.skip_persistence_default).unwrap_or(false);
 		skip = instance.skip_persistence.unwrap_or(global_default);
 
@@ -99,7 +98,6 @@ pub async fn set_image(mut event: ContextAndPayloadEvent<SetImagePayload>) -> Re
 		},
 	};
 	if let Some(instance) = found {
-		crate::plugin_telemetry::record("set_image", &instance.action.plugin);
 		let global_default = crate::store::get_settings().map(|s| s.value.skip_persistence_default).unwrap_or(false);
 		skip = instance.skip_persistence.unwrap_or(global_default);
 
@@ -130,7 +128,6 @@ pub async fn set_image(mut event: ContextAndPayloadEvent<SetImagePayload>) -> Re
 			}
 		}
 		// Capture child info before releasing the borrow on instance
-		log::debug!("[set_image] context={} index={}", instance.context.to_string(), instance.context.index);
 		let child_notify = if instance.context.index > 0 {
 			Some((
 				instance.context.clone(),
@@ -149,27 +146,22 @@ pub async fn set_image(mut event: ContextAndPayloadEvent<SetImagePayload>) -> Re
 		};
 
 		if let Err(e) = update_state(crate::APP_HANDLE.get().unwrap(), instance.context.clone(), &mut locks).await {
-			log::debug!("[set_image] update_state error (non-fatal for children): {}", e);
+			// Non-fatal for children — parent forward path below still runs.
+			let _ = e;
 		}
 
 		// Notify parent plugin with child's image for grid compositing
 		if let Some((child_ctx, child_image, parent_context)) = child_notify {
-			log::info!("[set_image] child detected, looking up parent at {}.{}", parent_context.device, parent_context.position);
 			let forward_info = if let Ok(Some(parent)) = get_instance_mut(&crate::shared::ActionContext::from_context(parent_context, 0), &mut locks).await {
-				log::info!("[set_image] parent found: {} children={}", parent.action.uuid, parent.children.as_ref().map(|c| c.len()).unwrap_or(0));
 				let child_index = parent.children.as_ref()
 					.and_then(|c| c.iter().position(|ch| ch.context == child_ctx));
-				log::info!("[set_image] child_index={:?} child_ctx={}", child_index, child_ctx.to_string());
 				child_index.map(|idx| (parent.action.plugin.clone(), parent.action.uuid.clone(), parent.context.to_string(), idx))
 			} else {
-				log::warn!("[set_image] parent NOT FOUND");
 				None
 			};
-			log::info!("[set_image] forward_info={}", forward_info.is_some());
 			drop(locks);
 
 			if let Some((plugin, action_uuid, context_str, idx)) = forward_info {
-				log::info!("[set_image] forwarding child {} image to {}", idx, plugin);
 				let send_result = crate::events::outbound::send_to_plugin(
 					&plugin,
 					&serde_json::json!({
@@ -184,9 +176,8 @@ pub async fn set_image(mut event: ContextAndPayloadEvent<SetImagePayload>) -> Re
 						}
 					}),
 				).await;
-				match &send_result {
-					Ok(()) => log::info!("[set_image] forwarded OK"),
-					Err(e) => log::warn!("[set_image] forward FAILED: {}", e),
+				if let Err(e) = &send_result {
+					log::warn!("[set_image] forward to {} FAILED: {}", plugin, e);
 				}
 			}
 			// Child: locks dropped, skip save, return early
@@ -235,7 +226,6 @@ fn should_emit_fast_path_preview(context_str: &str) -> bool {
 pub async fn set_feedback(event: ContextAndPayloadEvent<serde_json::Value>) -> Result<(), anyhow::Error> {
 	let mut locks = acquire_locks_mut().await;
 	if let Some(instance) = get_instance_mut(&event.context, &mut locks).await? {
-		crate::plugin_telemetry::record("set_feedback", &instance.action.plugin);
 		merge_feedback(&mut instance.feedback, event.payload);
 		let snapshot = instance.clone();
 		drop(locks);
@@ -268,7 +258,13 @@ pub async fn set_feedback(event: ContextAndPayloadEvent<serde_json::Value>) -> R
 					let ctx: crate::shared::Context = context.into();
 					let selected = crate::store::profiles::DEVICE_STORES.write().await
 						.get_selected_profile(&ctx.device).ok();
-					if selected.as_deref() != Some(&ctx.profile) {
+					let is_active_native = selected.as_deref() == Some(&ctx.profile);
+					// Carry-aware: anchor profile pushes when its slot is being shown in the active profile.
+					let is_carry_anchor = match &selected {
+						Some(active) => crate::carry::is_anchor_for_active(&ctx.device, active, &ctx.controller, ctx.position, &ctx.profile).await,
+						None => false,
+					};
+					if !is_active_native && !is_carry_anchor {
 						log::info!("[enc-tel] FAST_PATH_BLOCKED_PROFILE ctx_profile={} selected={:?}", ctx.profile, selected);
 						return;
 					}
@@ -304,9 +300,7 @@ pub async fn set_feedback(event: ContextAndPayloadEvent<serde_json::Value>) -> R
 pub async fn set_feedback_layout(event: ContextAndPayloadEvent<serde_json::Value>) -> Result<(), anyhow::Error> {
 	{
 		let mut locks = acquire_locks_mut().await;
-		if let Some(instance) = get_instance_mut(&event.context, &mut locks).await? {
-			crate::plugin_telemetry::record("set_feedback_layout", &instance.action.plugin);
-		}
+		let _ = get_instance_mut(&event.context, &mut locks).await?;
 	}
 	let layout_id = match &event.payload {
 		serde_json::Value::String(s) => s.clone(),
@@ -362,7 +356,6 @@ pub async fn set_state(event: ContextAndPayloadEvent<SetStatePayload>) -> Result
 	let mut locks = acquire_locks_mut().await;
 
 	if let Some(instance) = get_instance_mut(&event.context, &mut locks).await? {
-		crate::plugin_telemetry::record("set_state", &instance.action.plugin);
 		if event.payload.state >= instance.states.len() as u16 {
 			return Ok(());
 		}

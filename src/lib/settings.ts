@@ -11,6 +11,9 @@ export type Settings = {
 	separatewine: boolean;
 	developer: boolean;
 	disableelgato: boolean;
+	skip_persistence_default: boolean;
+	debug_log_until_ts: number | null;
+	debug_log_permanent: boolean;
 };
 
 import { invoke } from "@tauri-apps/api/core";

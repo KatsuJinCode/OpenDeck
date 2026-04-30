@@ -2,10 +2,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod application_watcher;
+mod carry;
+mod debug_log_gate;
 mod device_sleep;
+mod disk_io;
+mod dump;
 mod elgato;
 mod events;
-mod plugin_telemetry;
 mod plugins;
 mod shared;
 mod store;
@@ -29,16 +32,11 @@ use tauri_plugin_log::{Target, TargetKind};
 
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 
-#[tauri::command]
-fn log_telemetry(app: AppHandle, payload: String) -> Result<(), String> {
-	use std::io::Write;
-	let dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
-	std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-	let path = dir.join("telemetry.jsonl");
-	let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(|e| e.to_string())?;
-	writeln!(f, "{}", payload).map_err(|e| e.to_string())?;
-	Ok(())
-}
+// Frontend used to invoke a `log_telemetry` command that appended every event
+// to `~/.local/share/opendeck/logs/telemetry.jsonl`. Removed 2026-04-29 — the
+// file was unbounded (grew to 161 MB) and nothing read it. The in-memory
+// counters in `src/lib/telemetry.ts` still expose live data via dev tools.
+// See docs/DISK-WRITE-POLICY.md.
 
 fn show_window(app: &AppHandle) -> Result<(), tauri::Error> {
 	#[cfg(target_os = "macos")]
@@ -68,6 +66,7 @@ fn hide_window(app: &AppHandle) -> Result<(), tauri::Error> {
 async fn main() {
 	log_panics::init();
 	let _ = fix_path_env::fix();
+	debug_log_gate::capture_cli_override();
 
 	#[cfg(target_os = "linux")]
 	// SAFETY: std::env::set_var can cause race conditions in multithreaded contexts. We have not spawned any other threads at this point.
@@ -118,11 +117,15 @@ async fn main() {
 			frontend::settings::open_config_directory,
 			frontend::settings::open_log_directory,
 			frontend::settings::get_build_info,
-			log_telemetry
+			frontend::settings::set_debug_log_window,
+			disk_io::get_disk_write_rate,
+			dump::dump_preview_state,
+			dump::get_slot_feedback,
 		])
 		.setup(|app| {
 			APP_HANDLE.set(app.handle().clone()).unwrap();
-			plugin_telemetry::start_reporter();
+			dump::spawn_trigger_watcher();
+			debug_log_gate::apply_initial_state();
 
 			#[cfg(windows)]
 			if !std::env::args().any(|v| v == "--hide") {

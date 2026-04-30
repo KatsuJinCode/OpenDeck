@@ -11,7 +11,6 @@
 // can call `recordEventReceived()` and `recordReactiveRun()` to track
 // event throughput and reactive re-render rate.
 
-import { invoke } from "@tauri-apps/api/core";
 import { listen as tauriListen, type UnlistenFn, type Event } from "@tauri-apps/api/event";
 
 type Counts = Record<string, number>;
@@ -182,11 +181,10 @@ function snapshot(): void {
 
 	console.log("[OPENDECK_TELEMETRY]", JSON.stringify(payload));
 
-	// Best-effort persistent log via Rust. Ignore errors -- the console log
-	// is the authoritative source if the command isn't registered yet.
-	try {
-		invoke("log_telemetry", { payload: JSON.stringify(payload) }).catch(() => {});
-	} catch {}
+	// Disk persistence (telemetry.jsonl) was removed 2026-04-29: the file grew
+	// to 161 MB, nothing read it, and the in-memory counters plus the console
+	// emission above are sufficient for live debugging via DevTools. See
+	// OpenDeck-fork/docs/DISK-WRITE-POLICY.md.
 
 	lastSnapshotTime = now;
 	lastEventCounts = { ...eventReceiveCounts };
