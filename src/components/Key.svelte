@@ -39,8 +39,45 @@
 		}
 		prevSlotContext = trackAssign("prevSlotContext", newCtx);
 		slot = trackAssign("slot.fromUpdate", inslot);
+
+		// The slot data passed in via `inslot` comes from the disk-persisted
+		// profile, which doesn't include `feedback`. After a profile switch
+		// (or any time DeviceView remounts this Key with new inslot), the
+		// canvas would render the empty $A0 layout = a black panel until the
+		// next setFeedback push from the plugin — which may never come if
+		// the plugin caches state and only pushes on change. Pull current
+		// in-memory feedback from the backend so the preview seeds correctly.
+		if (inslot && context?.controller === "Encoder") {
+			seedFeedbackFromBackend();
+		}
 	};
 	$: { recordReactiveRun("Key.update"); update(inslot); }
+
+	async function seedFeedbackFromBackend() {
+		if (!context || !slot) return;
+		try {
+			const live = await invoke<{ layout: string | null; feedback: Record<string, unknown> | null } | null>(
+				"get_slot_feedback",
+				{ context }
+			);
+			if (!live || !slot) return;
+			// Only seed if the slot still has no feedback / layout — a
+			// concurrent feedback_changed event arriving first should win.
+			if (slot.feedback == null || Object.keys(slot.feedback ?? {}).length === 0 || slot.feedback_layout == null) {
+				slot = trackAssign("slot.fromBackendSeed", {
+					...slot,
+					feedback: live.feedback ?? slot.feedback,
+					feedback_layout: live.layout ?? slot.feedback_layout,
+				});
+				if (live.feedback && Object.keys(live.feedback).length > 0) {
+					awaitingFirstFeedback = trackAssign("awaitingFirstFeedback", false);
+				}
+			}
+		} catch (err) {
+			// Backend may not have the slot loaded yet (race with willAppear);
+			// the next feedback_changed event will populate it shortly.
+		}
+	}
 
 	export let active: boolean = true;
 	export let scale: number = 1;
