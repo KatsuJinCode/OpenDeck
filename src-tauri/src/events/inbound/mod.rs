@@ -65,6 +65,10 @@ pub enum InboundEventType {
 	ShowOk(ContextEvent),
 	SendToPropertyInspector(ContextAndPayloadEvent<serde_json::Value>),
 	SendToPlugin(ContextAndPayloadEvent<serde_json::Value>),
+	// SDK event name is `switchToProfile`, not the camelCase derivation
+	// `switchProfile`. Without this rename, plugin-sent profile-switch
+	// messages silently fail to deserialize and the entire feature is dead.
+	#[serde(rename = "switchToProfile")]
 	SwitchProfile(misc::SwitchProfileEvent),
 	DeviceBrightness(misc::DeviceBrightnessEvent),
 	TriggerChildPress(misc::TriggerChildPressEvent),
@@ -122,7 +126,13 @@ pub async fn process_incoming_message(data: Result<Message, Error>, uuid: &str, 
 				&& uuid != "com.amansprojects.starterpack.sdPlugin"
 				&& uuid != "opendeck_alternative_elgato_implementation"
 			{
-				return;
+				// Upstream restricts SwitchProfile + DeviceBrightness to two
+				// specific plugins. That blocks legitimate use cases like
+				// auto-switching profiles based on app context (browser tab
+				// focus, foreground app, etc.). On a self-hosted install the
+				// trust boundary doesn't exist — every plugin is one the user
+				// installed themselves. Log the call but allow it through.
+				log::info!("[switch_profile] allowing SwitchProfile/DeviceBrightness from plugin uuid={}", uuid);
 			}
 		}
 

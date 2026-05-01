@@ -25,9 +25,12 @@ struct DialRotateEvent {
 pub async fn dial_rotate(device: &str, index: u8, ticks: i16) -> Result<(), anyhow::Error> {
 	let mut locks = acquire_locks_mut().await;
 	let selected_profile = locks.device_stores.get_selected_profile(device)?;
+	// Carry redirect: if this slot is carried from another profile, look up the
+	// instance under the anchor profile so the plugin's tracked context matches.
+	let lookup_profile = crate::carry::anchor_or_self(device, &selected_profile, "Encoder", index).await;
 	let context = ActionContext {
 		device: device.to_owned(),
-		profile: selected_profile.to_owned(),
+		profile: lookup_profile,
 		controller: "Encoder".to_owned(),
 		position: index,
 		index: 0,
@@ -93,9 +96,10 @@ struct TouchTapEvent {
 pub async fn touch_tap(device: &str, index: u8, tap_pos: (u16, u16), hold: bool) -> Result<(), anyhow::Error> {
 	let mut locks = acquire_locks_mut().await;
 	let selected_profile = locks.device_stores.get_selected_profile(device)?;
+	let lookup_profile = crate::carry::anchor_or_self(device, &selected_profile, "Encoder", index).await;
 	let context = ActionContext {
 		device: device.to_owned(),
-		profile: selected_profile.to_owned(),
+		profile: lookup_profile,
 		controller: "Encoder".to_owned(),
 		position: index,
 		index: 0,
@@ -127,9 +131,10 @@ pub async fn touch_tap(device: &str, index: u8, tap_pos: (u16, u16), hold: bool)
 pub async fn dial_press(device: &str, event: &'static str, index: u8) -> Result<(), anyhow::Error> {
 	let mut locks = acquire_locks_mut().await;
 	let selected_profile = locks.device_stores.get_selected_profile(device)?;
+	let lookup_profile = crate::carry::anchor_or_self(device, &selected_profile, "Encoder", index).await;
 	let context = ActionContext {
 		device: device.to_owned(),
-		profile: selected_profile.to_owned(),
+		profile: lookup_profile,
 		controller: "Encoder".to_owned(),
 		position: index,
 		index: 0,

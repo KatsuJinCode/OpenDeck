@@ -50,9 +50,78 @@ pub async fn set_selected_profile(device: String, id: String) -> Result<(), Erro
 
 	let selected_profile = locks.device_stores.get_selected_profile(&device)?;
 
+	// Compute carry slots: positions where the OLD active instance (anchor-resolved)
+	// has the same action UUID + settings as NEW's native instance. Those slots skip
+	// willDisappear/willAppear so the plugin keeps its state across the switch
+	// (e.g. resource-monitor graph buffers, claude-monitor cached sessions).
+	let mut carry_keypad: std::collections::HashSet<u8> = std::collections::HashSet::new();
+	let mut carry_encoder: std::collections::HashSet<u8> = std::collections::HashSet::new();
+	struct PendingCarry {
+		controller: &'static str,
+		position: u8,
+		anchor_profile: String,
+	}
+	let mut pending_carries: Vec<PendingCarry> = Vec::new();
+
 	if selected_profile != id {
-		let old_profile = &locks.profile_stores.get_profile_store(&DEVICES.get(&device).unwrap(), &selected_profile)?.value;
-		for instance in old_profile.keys.iter().flatten().chain(&mut old_profile.sliders.iter().flatten()) {
+		let device_info = DEVICES.get(&device).unwrap().clone();
+		// Snapshot new profile's native slots and old profile's slots so we don't
+		// hold the profile_stores guard across the carry::anchor_or_self awaits.
+		let new_keys = locks.profile_stores.get_profile_store(&device_info, &id)?.value.keys.clone();
+		let new_sliders = locks.profile_stores.get_profile_store(&device_info, &id)?.value.sliders.clone();
+
+		for (i, new_slot) in new_keys.iter().enumerate() {
+			let pos = i as u8;
+			let anchor = crate::carry::anchor_or_self(&device, &selected_profile, "Keypad", pos).await;
+			let old_active: Option<crate::shared::ActionInstance> = locks
+				.profile_stores
+				.get_profile_store(&device_info, &anchor)
+				.ok()
+				.and_then(|s| s.value.keys.get(i).cloned().flatten());
+			if let (Some(old), Some(new)) = (old_active.as_ref(), new_slot.as_ref())
+				&& old.action.uuid == new.action.uuid
+				&& old.settings == new.settings
+			{
+				carry_keypad.insert(pos);
+				// Skip the self-anchor case (anchor == new profile) — installing
+				// (X → X) is a no-op redirect that just clutters logs.
+				if anchor != id {
+					pending_carries.push(PendingCarry { controller: "Keypad", position: pos, anchor_profile: anchor });
+				}
+			}
+		}
+		for (i, new_slot) in new_sliders.iter().enumerate() {
+			let pos = i as u8;
+			let anchor = crate::carry::anchor_or_self(&device, &selected_profile, "Encoder", pos).await;
+			let old_active: Option<crate::shared::ActionInstance> = locks
+				.profile_stores
+				.get_profile_store(&device_info, &anchor)
+				.ok()
+				.and_then(|s| s.value.sliders.get(i).cloned().flatten());
+			if let (Some(old), Some(new)) = (old_active.as_ref(), new_slot.as_ref())
+				&& old.action.uuid == new.action.uuid
+				&& old.settings == new.settings
+			{
+				carry_encoder.insert(pos);
+				if anchor != id {
+					pending_carries.push(PendingCarry { controller: "Encoder", position: pos, anchor_profile: anchor });
+				}
+			}
+		}
+		log::info!(
+			"[carry] {} → {}: {} keypad carries, {} encoder carries",
+			selected_profile,
+			id,
+			carry_keypad.len(),
+			carry_encoder.len()
+		);
+
+		let old_profile = &locks.profile_stores.get_profile_store(&device_info, &selected_profile)?.value;
+		for (i, slot) in old_profile.keys.iter().enumerate() {
+			if carry_keypad.contains(&(i as u8)) {
+				continue;
+			}
+			let Some(instance) = slot else { continue };
 			if !matches!(instance.action.uuid.as_str(), "opendeck.multiaction" | "opendeck.toggleaction") {
 				let _ = crate::events::outbound::will_appear::will_disappear(instance, false).await;
 			} else {
@@ -61,7 +130,36 @@ pub async fn set_selected_profile(device: String, id: String) -> Result<(), Erro
 				}
 			}
 		}
-		let _ = crate::events::outbound::devices::clear_screen(device.clone()).await;
+		for (i, slot) in old_profile.sliders.iter().enumerate() {
+			if carry_encoder.contains(&(i as u8)) {
+				continue;
+			}
+			let Some(instance) = slot else { continue };
+			if !matches!(instance.action.uuid.as_str(), "opendeck.multiaction" | "opendeck.toggleaction") {
+				let _ = crate::events::outbound::will_appear::will_disappear(instance, false).await;
+			} else {
+				for child in instance.children.as_ref().unwrap() {
+					let _ = crate::events::outbound::will_appear::will_disappear(child, false).await;
+				}
+			}
+		}
+
+		// Skip clear_screen entirely if any carries — the carried slots' device
+		// images must persist. Non-carry slots will be redrawn by their plugin
+		// shortly after willAppear, briefly showing stale content. With zero
+		// carries, fall through to the original full-clear behavior.
+		if carry_keypad.is_empty() && carry_encoder.is_empty() {
+			let _ = crate::events::outbound::devices::clear_screen(device.clone()).await;
+		}
+
+		// Stale carries on the profile we're leaving become irrelevant; drop them.
+		crate::carry::break_all_for(&device, &selected_profile).await;
+		// Refresh carries on the destination so it reflects the just-computed diff,
+		// not whatever was installed by an earlier session.
+		crate::carry::break_all_for(&device, &id).await;
+		for c in &pending_carries {
+			crate::carry::install(&device, &id, c.controller, c.position, &c.anchor_profile).await;
+		}
 	}
 
 	// We must use the mutable version of get_profile_store in order to create the store if it does not exist.
@@ -86,7 +184,24 @@ pub async fn set_selected_profile(device: String, id: String) -> Result<(), Erro
 		crate::plugins::ensure_plugin_spawned(uuid).await;
 	}
 
-	for instance in new_profile.keys.iter().flatten().chain(&mut new_profile.sliders.iter().flatten()) {
+	for (i, slot) in new_profile.keys.iter().enumerate() {
+		if carry_keypad.contains(&(i as u8)) {
+			continue;
+		}
+		let Some(instance) = slot else { continue };
+		if !matches!(instance.action.uuid.as_str(), "opendeck.multiaction" | "opendeck.toggleaction") {
+			let _ = crate::events::outbound::will_appear::will_appear(instance).await;
+		} else {
+			for child in instance.children.as_ref().unwrap() {
+				let _ = crate::events::outbound::will_appear::will_appear(child).await;
+			}
+		}
+	}
+	for (i, slot) in new_profile.sliders.iter().enumerate() {
+		if carry_encoder.contains(&(i as u8)) {
+			continue;
+		}
+		let Some(instance) = slot else { continue };
 		if !matches!(instance.action.uuid.as_str(), "opendeck.multiaction" | "opendeck.toggleaction") {
 			let _ = crate::events::outbound::will_appear::will_appear(instance).await;
 		} else {

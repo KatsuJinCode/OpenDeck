@@ -42,20 +42,53 @@ pub async fn show_ok(event: ContextEvent) -> Result<(), anyhow::Error> {
 	Ok(())
 }
 
+/// Stream Deck SDK shape for the `switchToProfile` event:
+///   { event: "switchToProfile", context: pluginUUID, device: deviceId,
+///     payload: { profile: name, page: int } }
+/// `device` is at top level; `profile` lives in `payload`. The previous flat
+/// definition `{ device, profile }` couldn't deserialize anything the SDK
+/// actually sent — every plugin call was silently dropped at decode.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SwitchProfileEvent {
 	pub device: String,
-	pub profile: String,
+	pub payload: SwitchProfilePayload,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SwitchProfilePayload {
+	#[serde(default)]
+	pub profile: Option<String>,
+	#[serde(default)]
+	pub page: Option<u32>,
 }
 
 impl SwitchProfileEvent {
 	pub fn new(device: String, profile: String) -> Self {
-		Self { device, profile }
+		Self {
+			device,
+			payload: SwitchProfilePayload { profile: Some(profile), page: None },
+		}
 	}
 }
 
 pub async fn switch_profile(event: SwitchProfileEvent) -> Result<(), anyhow::Error> {
 	let app_handle = crate::APP_HANDLE.get().unwrap();
+	let Some(profile_name) = event.payload.profile.clone() else {
+		// SDK allows omitting profile to "switch to previous"; not implemented
+		// here because we have no previous-profile tracking. Ignore for now.
+		log::info!("[switch_profile] skip: no profile name in payload");
+		return Ok(());
+	};
+	log::info!("[switch_profile] device={} profile={}", event.device, profile_name);
+	// Drive the actual profile change on the backend. Previously this only
+	// emitted a webview event, which only worked when the UI was open. Calling
+	// set_selected_profile directly makes the switch happen headless too.
+	if let Err(e) = crate::events::frontend::profiles::set_selected_profile(
+		event.device.clone(),
+		profile_name,
+	).await {
+		log::warn!("[switch_profile] set_selected_profile failed: {}", e);
+	}
 	app_handle.get_webview_window("main").unwrap().emit("switch_profile", event)?;
 	Ok(())
 }

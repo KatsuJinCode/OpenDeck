@@ -254,7 +254,14 @@ pub async fn update_image(context: Context, image: Option<String>) {
 	if context.controller == "Encoder" && image.is_none() {
 		return;
 	}
-	if Some(&context.profile) != crate::store::profiles::DEVICE_STORES.write().await.get_selected_profile(&context.device).ok().as_ref() {
+	let selected = crate::store::profiles::DEVICE_STORES.write().await.get_selected_profile(&context.device).ok();
+	let is_active_native = selected.as_ref() == Some(&context.profile);
+	// Carry-aware: if context.profile is the anchor of a slot in the active profile, push anyway.
+	let is_carry_anchor = match &selected {
+		Some(active) => crate::carry::is_anchor_for_active(&context.device, active, &context.controller, context.position, &context.profile).await,
+		None => false,
+	};
+	if !is_active_native && !is_carry_anchor {
 		return;
 	}
 

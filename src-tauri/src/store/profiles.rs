@@ -30,6 +30,13 @@ impl ProfileStores {
 		self.stores.get(&Self::canonical_id(&device.id, id)).ok_or_else(|| anyhow!("profile not found"))
 	}
 
+	/// Iterate every loaded (canonical_id, store) pair. Used by debug-dump
+	/// helpers to walk all current profile state. canonical_id has the
+	/// form `device/profile`.
+	pub fn iter_all(&self) -> impl Iterator<Item = (&String, &Store<Profile>)> {
+		self.stores.iter()
+	}
+
 	pub async fn get_profile_store_mut(&mut self, device: &DeviceInfo, id: &str) -> Result<&mut Store<Profile>, anyhow::Error> {
 		let canonical_id = Self::canonical_id(&device.id, id);
 		if self.stores.contains_key(&canonical_id) {
