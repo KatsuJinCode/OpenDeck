@@ -9,6 +9,7 @@
 	import ActionList from "../components/ActionList.svelte";
 	import DeviceSelector from "../components/DeviceSelector.svelte";
 	import DeviceView from "../components/DeviceView.svelte";
+	import DiskIOIndicator from "../components/DiskIOIndicator.svelte";
 	import NoDevicesDetected from "../components/NoDevicesDetected.svelte";
 	import ParentActionView from "../components/ParentActionView.svelte";
 	import PluginManager from "../components/PluginManager.svelte";
@@ -47,6 +48,7 @@
 			</div>
 
 			<div class="flex flex-row items-center space-x-2" class:mr-4={Object.keys(devices).length > 0}>
+				<DiskIOIndicator />
 				<PluginManager />
 				<SettingsView />
 			</div>
