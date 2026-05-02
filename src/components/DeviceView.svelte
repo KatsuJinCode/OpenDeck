@@ -189,7 +189,7 @@
 		on:keydown|capture={handleGridKeydown}
 		on:focusin={handleGridFocusin}
 	>
-		<div class="flex flex-col" role="rowgroup">
+		<div class="flex flex-col w-fit" role="rowgroup">
 			{#each { length: device.rows } as _, r}
 				<div class="flex flex-row" role="row">
 					{#each { length: device.columns } as _, c}
@@ -207,11 +207,9 @@
 					{/each}
 				</div>
 			{/each}
-		</div>
 
-		{#if device.encoders > 0}
-			<div class="flex flex-col items-center mt-2" role="row">
-				<div class="encoder-strip flex flex-row" style="width: {device.columns <= 8 ? (device.columns * 132) : (device.columns * 144)}px;">
+			{#if device.encoders > 0}
+				<div class="encoder-strip flex flex-row mt-2" style="width: {device.columns * 132}px;" role="row">
 					{#each { length: device.encoders } as _, i}
 						<Key
 							context={{ device: device.id, profile: profile.id, controller: "Encoder", position: i }}
@@ -228,24 +226,24 @@
 						/>
 					{/each}
 				</div>
-			</div>
-		{/if}
+			{/if}
 
-		<div class="flex flex-row" role="row">
-			{#each { length: device.touchpoints } as _, i}
-				<Key
-					context={{ device: device.id, profile: profile.id, controller: "Keypad", position: (device.rows * device.columns) + i }}
-					bind:inslot={profile.keys[(device.rows * device.columns) + i]}
-					on:dragover={handleDragOver}
-					on:drop={(event) => handleDrop(event, "Keypad", (device.rows * device.columns) + i)}
-					on:dragstart={(event) => handleDragStart(event, "Keypad", (device.rows * device.columns) + i)}
-					{handlePaste}
-					size={device.id.startsWith("sd-") && device.rows == 4 && device.columns == 8 ? 192 : 144}
-					isTouchPoint
-					label="Touch point {i + 1}"
-					tabindex={focusedRow === touchpointRowIndex && focusedCol === i ? 0 : -1}
-				/>
-			{/each}
+			<div class="flex flex-row" role="row">
+				{#each { length: device.touchpoints } as _, i}
+					<Key
+						context={{ device: device.id, profile: profile.id, controller: "Keypad", position: (device.rows * device.columns) + i }}
+						bind:inslot={profile.keys[(device.rows * device.columns) + i]}
+						on:dragover={handleDragOver}
+						on:drop={(event) => handleDrop(event, "Keypad", (device.rows * device.columns) + i)}
+						on:dragstart={(event) => handleDragStart(event, "Keypad", (device.rows * device.columns) + i)}
+						{handlePaste}
+						size={device.id.startsWith("sd-") && device.rows == 4 && device.columns == 8 ? 192 : 144}
+						isTouchPoint
+						label="Touch point {i + 1}"
+						tabindex={focusedRow === touchpointRowIndex && focusedCol === i ? 0 : -1}
+					/>
+				{/each}
+			</div>
 		</div>
 	</div>
 {/key}
