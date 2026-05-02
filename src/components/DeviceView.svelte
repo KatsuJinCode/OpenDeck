@@ -226,6 +226,22 @@
 						/>
 					{/each}
 				</div>
+				<div class="flex flex-row justify-around mt-1" style="width: {device.columns * 132}px;" role="row">
+					{#each { length: device.encoders } as _, i}
+						<Key
+							context={{ device: device.id, profile: profile.id, controller: "Encoder", position: i }}
+							bind:inslot={profile.sliders[i]}
+							on:dragover={handleDragOver}
+							on:drop={(event) => handleDrop(event, "Encoder", i)}
+							on:dragstart={(event) => handleDragStart(event, "Encoder", i)}
+							{handlePaste}
+							size={144}
+							label="Dial {i + 1}"
+							tabindex={-1}
+							role="presentation"
+						/>
+					{/each}
+				</div>
 			{/if}
 
 			<div class="flex flex-row" role="row">

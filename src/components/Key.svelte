@@ -202,7 +202,7 @@
 			} finally {
 				unlock();
 			}
-		} else if (context?.controller === "Encoder" && resolvedLayout) {
+		} else if (context?.controller === "Encoder" && resolvedLayout && encoderStrip) {
 			// Encoder slot with a feedback layout: composite the layout items and
 			// push the rendered 200x100 pixmap to the device. The layout's icon
 			// slot falls back to the action's state image when the plugin hasn't
@@ -239,7 +239,7 @@
 			} finally {
 				unlock();
 			}
-		} else if (context?.controller !== "Encoder") {
+		} else if (!encoderStrip) {
 			const unlock = await lock.lock();
 			try {
 				let fallback = sl.action.states[sl.current_state]?.image ?? sl.action.icon;
