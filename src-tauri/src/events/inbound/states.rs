@@ -145,9 +145,45 @@ pub async fn set_image(mut event: ContextAndPayloadEvent<SetImagePayload>) -> Re
 			None
 		};
 
+		// Capture data for a direct device push. Owned values only so the
+		// spawned task below doesn't borrow `instance` (which is borrowed
+		// from `locks`). For non-child instances only — children (index > 0)
+		// are handled by the parent-forward path further down.
+		let direct_push_info: Option<(crate::shared::Context, Option<String>)> =
+			if instance.context.index == 0 {
+				let ctx: crate::shared::Context = (&instance.context).into();
+				let image = instance.states.get(instance.current_state as usize)
+					.map(|s| s.image.clone());
+				Some((ctx, image))
+			} else { None };
+
 		if let Err(e) = update_state(crate::APP_HANDLE.get().unwrap(), instance.context.clone(), &mut locks).await {
 			// Non-fatal for children — parent forward path below still runs.
 			let _ = e;
+		}
+
+		// Direct device push for keypad slots. Old code relied on the
+		// webview's Key.svelte to observe update_state and invoke
+		// update_image — which fails when the UI is hidden (--hide) and the
+		// Key components don't mount/paint. We mirror the setFeedback fast
+		// path: read the selected profile from the already-held locks (NO
+		// new lock acquisition — that's what deadlocked the earlier attempt)
+		// and tokio::spawn the actual push so it runs after `locks` drops.
+		if let Some((ctx, Some(image))) = direct_push_info {
+			let selected_profile = locks.device_stores
+				.get_selected_profile(&ctx.device)
+				.ok();
+			let is_active_native = selected_profile.as_deref() == Some(&ctx.profile);
+			tokio::spawn(async move {
+				let is_carry_anchor = match &selected_profile {
+					Some(active) if !is_active_native => crate::carry::is_anchor_for_active(&ctx.device, active, &ctx.controller, ctx.position, &ctx.profile).await,
+					_ => false,
+				};
+				if !is_active_native && !is_carry_anchor { return; }
+				if let Err(error) = crate::events::outbound::devices::update_image(ctx, Some(image)).await {
+					log::warn!("set_image direct device push failed: {}", error);
+				}
+			});
 		}
 
 		// Notify parent plugin with child's image for grid compositing
@@ -248,9 +284,14 @@ pub async fn set_feedback(event: ContextAndPayloadEvent<serde_json::Value>) -> R
 			&& full_canvas.starts_with("data:")
 		{
 			let ctx_str = snapshot.context.to_string();
-			let was_warming = crate::events::outbound::will_appear::clear_warming_up(&ctx_str).await;
-			if was_warming {
-				log::info!("[enc-tel] FAST_PATH_SKIP_WARMUP ctx={}", ctx_str);
+			let _was_warming = crate::events::outbound::will_appear::clear_warming_up(&ctx_str).await;
+			// Never skip the push. The old gate dropped the first frame to
+			// dedupe with the webview's initial render, but that strands any
+			// plugin whose data source can't produce a second update — encoder
+			// stays stuck on a stale cached frame. Webview push (when UI is
+			// visible) sends identical bytes; double-push is idempotent.
+			if false {
+				log::info!("[enc-tel] FAST_PATH_SKIP_WARMUP ctx={} (disabled)", ctx_str);
 			} else {
 				let context = snapshot.context.clone();
 				let image = full_canvas.to_owned();
