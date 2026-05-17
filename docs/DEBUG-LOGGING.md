@@ -73,7 +73,7 @@ journalctl _COMM=opendeck -p warning --since today
 If the toggle dropdown isn't responsive (e.g. the frontend won't load), you can disable logging by editing the settings JSON directly:
 
 ```bash
-# 1. Quit OpenDeck (SIGTERM, see ../CLAUDE.md).
+# 1. Quit OpenDeck (SIGTERM, see /mnt/projects/elgato-projects/docs/opendeck-operations.md).
 pkill opendeck && sleep 4
 # 2. Clear both fields.
 python3 -c "
