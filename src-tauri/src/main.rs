@@ -265,38 +265,15 @@ If you have already donated, thank you so much for your support!"#,
 				let _ = app.deep_link().register_all();
 			}
 
-			async fn update() -> Result<(), anyhow::Error> {
-				let res = reqwest::Client::new()
-					.get("https://api.github.com/repos/nekename/OpenDeck/releases/latest")
-					.header("Accept", "application/vnd.github+json")
-					.header("User-Agent", "OpenDeck")
-					.send()
-					.await?
-					.json::<serde_json::Value>()
-					.await?;
-				let tag_name = res.get("tag_name").unwrap().as_str().unwrap();
-				if semver::Version::parse(built_info::PKG_VERSION)?.cmp(&semver::Version::parse(&tag_name[1..])?) == Ordering::Less {
-					let app = APP_HANDLE.get().unwrap();
-					app.dialog()
-						.message(format!(
-							"A new version of {PRODUCT_NAME}, {}, is available.\nUpdate description:\n\n{}",
-							tag_name,
-							res.get("body").map(|v| v.as_str().unwrap()).unwrap_or("No description").trim()
-						))
-						.title(format!("{PRODUCT_NAME} update available"))
-						.show(|_| ());
-				}
-
-				Ok(())
-			}
-
-			if settings.value.updatecheck {
-				tokio::spawn(async {
-					if let Err(error) = update().await {
-						log::warn!("Failed to update application: {error}");
-					}
-				});
-			}
+			// Upstream update-check disabled at compile time in this fork. We
+			// track upstream manually via `git fetch upstream && git merge`; an
+			// in-app nag that pops on every launch is exactly the kind of toil
+			// that has no place running unattended. If we ever want to re-enable
+			// it, revert this block, not flip a setting.
+			//
+			// Original code (the `update()` async fn + `if settings.value.updatecheck { ... }`
+			// dispatch) lives in git history. Do not restore without explicit
+			// Julian approval — see project issue 260516-opendeck-update-nag-must-never-appear-again.md.
 
 			Ok(())
 		})
