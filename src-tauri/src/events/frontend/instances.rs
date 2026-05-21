@@ -1,6 +1,6 @@
 use super::Error;
 
-use crate::shared::{Action, ActionContext, ActionInstance, ActionState, Context, config_dir};
+use crate::shared::{Action, ActionContext, ActionInstance, ActionState, CATEGORIES, Context, config_dir};
 use crate::store::profiles::{LocksMut, acquire_locks, acquire_locks_mut, get_instance_mut, get_slot, get_slot_mut, save_profile};
 
 use tauri::{AppHandle, Emitter, Manager, command};
@@ -11,6 +11,7 @@ pub async fn create_instance(app: AppHandle, action: Action, context: Context) -
 	if !action.controllers.contains(&context.controller) {
 		return Ok(None);
 	}
+	crate::plugins::ensure_plugin_spawned(&action.plugin).await;
 
 	// Per Elgato SDK (https://docs.elgato.com/streamdeck/sdk/guides/dials/),
 	// encoder feedback renders via layouts. Default to $X1 when the manifest
@@ -91,6 +92,37 @@ pub async fn create_instance(app: AppHandle, action: Action, context: Context) -
 
 		Ok(slot)
 	}
+}
+
+#[command]
+pub async fn place_instance(app: AppHandle, action_uuid: String, context: Context, replace: bool) -> Result<ActionInstance, Error> {
+	let action = CATEGORIES
+		.read()
+		.await
+		.values()
+		.flat_map(|category| category.actions.iter())
+		.find(|action| action.uuid == action_uuid)
+		.cloned()
+		.ok_or_else(|| Error::new(format!("action {action_uuid} not found")))?;
+
+	let existing_context = {
+		let locks = acquire_locks().await;
+		get_slot(&context, &locks).await?.as_ref().map(|instance| instance.context.clone())
+	};
+
+	if let Some(existing) = existing_context {
+		if !replace {
+			return Err(Error::new(format!(
+				"slot {}.{}.{}.{} is occupied",
+				context.device, context.profile, context.controller, context.position
+			)));
+		}
+		remove_instance(existing).await?;
+	}
+
+	create_instance(app, action, context)
+		.await?
+		.ok_or_else(|| Error::new(format!("action {action_uuid} cannot be placed there")))
 }
 
 fn instance_images_dir(context: &ActionContext) -> std::path::PathBuf {

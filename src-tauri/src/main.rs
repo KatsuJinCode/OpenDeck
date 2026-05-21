@@ -87,6 +87,7 @@ async fn main() {
 			frontend::set_application_profiles,
 			frontend::get_fonts,
 			frontend::instances::create_instance,
+			frontend::instances::place_instance,
 			frontend::instances::move_instance,
 			frontend::instances::remove_instance,
 			frontend::instances::set_state,
@@ -327,6 +328,33 @@ If you have already donated, thank you so much for your support!"#,
 							tauri::async_runtime::spawn(async move {
 								frontend::plugins::reload_plugin(app, plugin_id).await;
 							});
+						}
+					} else if let Some(pos) = args.iter().position(|x| x.to_lowercase().trim() == "--place-action") {
+						if args.len() > pos + 5 {
+							let app = app.clone();
+							let device = args[pos + 1].clone();
+							let profile = args[pos + 2].clone();
+							let controller = args[pos + 3].clone();
+							let position = args[pos + 4].parse::<u8>();
+							let action_uuid = args[pos + 5].clone();
+							let replace = args.iter().any(|x| x.to_lowercase().trim() == "--replace");
+							match position {
+								Ok(position) => {
+									tauri::async_runtime::spawn(async move {
+										let context = shared::Context {
+											device,
+											profile,
+											controller,
+											position,
+										};
+										match frontend::instances::place_instance(app, action_uuid.clone(), context, replace).await {
+											Ok(instance) => log::info!("[place_action] placed {} at {}", action_uuid, instance.context),
+											Err(error) => log::error!("[place_action] failed for {}: {}", action_uuid, error),
+										}
+									});
+								}
+								Err(error) => log::error!("[place_action] invalid position '{}': {}", args[pos + 4], error),
+							}
 						}
 					} else if let Some(pos) = args.iter().position(|x| x.to_lowercase().trim() == "--sleep-device") {
 						if args.len() > pos + 1 {
