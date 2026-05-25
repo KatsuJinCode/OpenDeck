@@ -87,16 +87,16 @@ fn apply(mode: RuntimeMode) {
 	match mode {
 		RuntimeMode::Off => {
 			log::set_max_level(LevelFilter::Off);
-		},
+		}
 		RuntimeMode::Permanent => {
 			log::set_max_level(LevelFilter::Trace);
 			eprintln!("[opendeck] debug logging is PERMANENT — disk writes ongoing. Disable in Settings → Logging.");
-		},
+		}
 		RuntimeMode::UntilTs(ts) => {
 			log::set_max_level(LevelFilter::Trace);
 			let remaining = ts.saturating_sub(now_secs());
 			eprintln!("[opendeck] debug logging ON for {remaining}s. Auto-disable at unix ts {ts}.");
-		},
+		}
 	}
 }
 

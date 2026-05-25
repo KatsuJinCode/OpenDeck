@@ -45,7 +45,10 @@ fn read_write_bytes() -> Option<u64> {
 #[tauri::command]
 pub fn get_disk_write_rate() -> DiskWriteRate {
 	let Some(now_bytes) = read_write_bytes() else {
-		return DiskWriteRate { bytes_per_sec: None, cumulative_bytes: 0 };
+		return DiskWriteRate {
+			bytes_per_sec: None,
+			cumulative_bytes: 0,
+		};
 	};
 	let now = Instant::now();
 	let mut guard = LAST.lock().unwrap();
@@ -58,5 +61,8 @@ pub fn get_disk_write_rate() -> DiskWriteRate {
 		Some((delta as f64 / dt) as u64)
 	});
 	*guard = Some(Sample { at: now, write_bytes: now_bytes });
-	DiskWriteRate { bytes_per_sec: rate, cumulative_bytes: now_bytes }
+	DiskWriteRate {
+		bytes_per_sec: rate,
+		cumulative_bytes: now_bytes,
+	}
 }

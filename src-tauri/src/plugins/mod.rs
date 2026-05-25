@@ -105,9 +105,7 @@ pub fn log_orphan_plugin_telemetry(phase: &'static str) {
 		}
 		let rss_kb: u64 = fs::read_to_string(format!("/proc/{}/status", pid))
 			.ok()
-			.and_then(|s| {
-				s.lines().find(|l| l.starts_with("VmRSS:")).and_then(|l| l.split_whitespace().nth(1).and_then(|n| n.parse().ok()))
-			})
+			.and_then(|s| s.lines().find(|l| l.starts_with("VmRSS:")).and_then(|l| l.split_whitespace().nth(1).and_then(|n| n.parse().ok())))
 			.unwrap_or(0);
 		orphans.push((pid, ppid, uuid, rss_kb));
 	}
@@ -210,7 +208,11 @@ fn compute_referenced_plugin_uuids() -> std::collections::HashSet<String> {
 				match serde_json::from_slice::<Value>(&bytes) {
 					Ok(v) => collect(&v, out),
 					Err(error) => {
-						warn!("Skipping profile file {} (malformed JSON): {}. Plugins referenced only by this profile will not be spawned at startup.", ep.display(), error);
+						warn!(
+							"Skipping profile file {} (malformed JSON): {}. Plugins referenced only by this profile will not be spawned at startup.",
+							ep.display(),
+							error
+						);
 					}
 				}
 			}

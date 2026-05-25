@@ -90,12 +90,12 @@ pub async fn set_image(mut event: ContextAndPayloadEvent<SetImagePayload>) -> Re
 				}
 			}
 			result
-		},
+		}
 		Ok(None) => None,
 		Err(e) => {
 			log::warn!("[set_image] lookup error for {}: {}", event.context.to_string(), e);
 			None
-		},
+		}
 	};
 	if let Some(instance) = found {
 		let global_default = crate::store::get_settings().map(|s| s.value.skip_persistence_default).unwrap_or(false);
@@ -149,13 +149,13 @@ pub async fn set_image(mut event: ContextAndPayloadEvent<SetImagePayload>) -> Re
 		// spawned task below doesn't borrow `instance` (which is borrowed
 		// from `locks`). For non-child instances only — children (index > 0)
 		// are handled by the parent-forward path further down.
-		let direct_push_info: Option<(crate::shared::Context, Option<String>)> =
-			if instance.context.index == 0 {
-				let ctx: crate::shared::Context = (&instance.context).into();
-				let image = instance.states.get(instance.current_state as usize)
-					.map(|s| s.image.clone());
-				Some((ctx, image))
-			} else { None };
+		let direct_push_info: Option<(crate::shared::Context, Option<String>)> = if instance.context.index == 0 {
+			let ctx: crate::shared::Context = (&instance.context).into();
+			let image = instance.states.get(instance.current_state as usize).map(|s| s.image.clone());
+			Some((ctx, image))
+		} else {
+			None
+		};
 
 		if let Err(e) = update_state(crate::APP_HANDLE.get().unwrap(), instance.context.clone(), &mut locks).await {
 			// Non-fatal for children — parent forward path below still runs.
@@ -170,16 +170,16 @@ pub async fn set_image(mut event: ContextAndPayloadEvent<SetImagePayload>) -> Re
 		// new lock acquisition — that's what deadlocked the earlier attempt)
 		// and tokio::spawn the actual push so it runs after `locks` drops.
 		if let Some((ctx, Some(image))) = direct_push_info {
-			let selected_profile = locks.device_stores
-				.get_selected_profile(&ctx.device)
-				.ok();
+			let selected_profile = locks.device_stores.get_selected_profile(&ctx.device).ok();
 			let is_active_native = selected_profile.as_deref() == Some(&ctx.profile);
 			tokio::spawn(async move {
 				let is_carry_anchor = match &selected_profile {
 					Some(active) if !is_active_native => crate::carry::is_anchor_for_active(&ctx.device, active, &ctx.controller, ctx.position, &ctx.profile).await,
 					_ => false,
 				};
-				if !is_active_native && !is_carry_anchor { return; }
+				if !is_active_native && !is_carry_anchor {
+					return;
+				}
 				if let Err(error) = crate::events::outbound::devices::update_image(ctx, Some(image)).await {
 					log::warn!("set_image direct device push failed: {}", error);
 				}
@@ -189,8 +189,7 @@ pub async fn set_image(mut event: ContextAndPayloadEvent<SetImagePayload>) -> Re
 		// Notify parent plugin with child's image for grid compositing
 		if let Some((child_ctx, child_image, parent_context)) = child_notify {
 			let forward_info = if let Ok(Some(parent)) = get_instance_mut(&crate::shared::ActionContext::from_context(parent_context, 0), &mut locks).await {
-				let child_index = parent.children.as_ref()
-					.and_then(|c| c.iter().position(|ch| ch.context == child_ctx));
+				let child_index = parent.children.as_ref().and_then(|c| c.iter().position(|ch| ch.context == child_ctx));
 				child_index.map(|idx| (parent.action.plugin.clone(), parent.action.uuid.clone(), parent.context.to_string(), idx))
 			} else {
 				None
@@ -211,14 +210,15 @@ pub async fn set_image(mut event: ContextAndPayloadEvent<SetImagePayload>) -> Re
 							}
 						}
 					}),
-				).await;
+				)
+				.await;
 				if let Err(e) = &send_result {
 					log::warn!("[set_image] forward to {} FAILED: {}", plugin, e);
 				}
 			}
 			// Child: locks dropped, skip save, return early
 			return Ok(());
-			}
+		}
 	}
 
 	if !skip {
@@ -273,12 +273,7 @@ pub async fn set_feedback(event: ContextAndPayloadEvent<serde_json::Value>) -> R
 		// IPC back). Partial-update plugins (title / bar / value / icon)
 		// still fall through to the compositor because those payloads need
 		// items merged into a layout before reaching device-ready pixels.
-		let took_fast_path = snapshot
-			.feedback
-			.get("full-canvas")
-			.and_then(|v| v.as_str())
-			.map(|s| s.starts_with("data:"))
-			.unwrap_or(false);
+		let took_fast_path = snapshot.feedback.get("full-canvas").and_then(|v| v.as_str()).map(|s| s.starts_with("data:")).unwrap_or(false);
 
 		if let Some(full_canvas) = snapshot.feedback.get("full-canvas").and_then(|v| v.as_str())
 			&& full_canvas.starts_with("data:")
@@ -297,8 +292,7 @@ pub async fn set_feedback(event: ContextAndPayloadEvent<serde_json::Value>) -> R
 				let image = full_canvas.to_owned();
 				tokio::spawn(async move {
 					let ctx: crate::shared::Context = context.into();
-					let selected = crate::store::profiles::DEVICE_STORES.write().await
-						.get_selected_profile(&ctx.device).ok();
+					let selected = crate::store::profiles::DEVICE_STORES.write().await.get_selected_profile(&ctx.device).ok();
 					let is_active_native = selected.as_deref() == Some(&ctx.profile);
 					// Carry-aware: anchor profile pushes when its slot is being shown in the active profile.
 					let is_carry_anchor = match &selected {
@@ -323,11 +317,7 @@ pub async fn set_feedback(event: ContextAndPayloadEvent<serde_json::Value>) -> R
 		// to 1Hz per context to drop allocation pressure on the webview.
 		// Non-fast-path updates (partial: title/bar/indicator) still emit at
 		// every change because the webview compositor owns the device update.
-		let should_emit = if took_fast_path {
-			should_emit_fast_path_preview(&snapshot.context.to_string())
-		} else {
-			true
-		};
+		let should_emit = if took_fast_path { should_emit_fast_path_preview(&snapshot.context.to_string()) } else { true };
 		if should_emit {
 			emit_feedback_changed(&snapshot);
 		}

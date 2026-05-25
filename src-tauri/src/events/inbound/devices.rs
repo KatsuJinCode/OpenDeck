@@ -229,10 +229,10 @@ pub async fn touch_swipe(device: String, from: (u16, u16), to: (u16, u16)) -> Re
 	crate::events::frontend::profiles::set_selected_profile(device.clone(), next_profile.clone()).await?;
 
 	let app_handle = crate::APP_HANDLE.get().unwrap();
-	app_handle.get_webview_window("main").unwrap().emit(
-		"switch_profile",
-		crate::events::inbound::misc::SwitchProfileEvent::new(device, next_profile),
-	)?;
+	app_handle
+		.get_webview_window("main")
+		.unwrap()
+		.emit("switch_profile", crate::events::inbound::misc::SwitchProfileEvent::new(device, next_profile))?;
 	Ok(())
 }
 

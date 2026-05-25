@@ -85,23 +85,16 @@ async fn dump_to(dir: &Path) -> Result<Vec<String>, anyhow::Error> {
 	Ok(written)
 }
 
-fn write_slot(
-	dir: &Path,
-	id_prefix: &str,
-	controller: &str,
-	position: usize,
-	inst: &crate::shared::ActionInstance,
-) -> Result<Option<String>, anyhow::Error> {
+fn write_slot(dir: &Path, id_prefix: &str, controller: &str, position: usize, inst: &crate::shared::ActionInstance) -> Result<Option<String>, anyhow::Error> {
 	// Encoders carry their rendered pixmap in feedback["full-canvas"] (set
 	// via setFeedback). Keys carry it in states[current_state].image (set
 	// via setImage). Try full-canvas first, then fall back to the current
 	// state image. Either way the resulting PNG is what OpenDeck believes
 	// the slot is currently showing.
-	let uri = inst.feedback.get("full-canvas").and_then(|v| v.as_str())
-		.or_else(|| {
-			let idx = inst.current_state as usize;
-			inst.states.get(idx).map(|s| s.image.as_str())
-		});
+	let uri = inst.feedback.get("full-canvas").and_then(|v| v.as_str()).or_else(|| {
+		let idx = inst.current_state as usize;
+		inst.states.get(idx).map(|s| s.image.as_str())
+	});
 	let Some(uri) = uri else { return Ok(None) };
 	if !uri.starts_with(DATA_URI_PREFIX) {
 		// Manifest-relative path or empty — not a base64 PNG we can dump.

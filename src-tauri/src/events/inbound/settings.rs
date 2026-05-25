@@ -17,7 +17,10 @@ pub async fn set_settings(event: super::ContextAndPayloadEvent<serde_json::Value
 			crate::carry::break_for(&event.context.device, &event.context.profile, &event.context.controller, event.context.position).await;
 			log::info!(
 				"[carry] BREAK on user edit: device={} profile={} {} pos={}",
-				event.context.device, event.context.profile, event.context.controller, event.context.position
+				event.context.device,
+				event.context.profile,
+				event.context.controller,
+				event.context.position
 			);
 			broke_carry = true;
 		}

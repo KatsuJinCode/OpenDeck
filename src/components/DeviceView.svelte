@@ -10,6 +10,7 @@
 
 	import { inspectedInstance, inspectedParentAction } from "$lib/propertyInspector";
 	import { dragAction, hoveredSlot } from "$lib/dragState";
+	import { uiScale } from "$lib/uiScale";
 
 	import { invoke } from "@tauri-apps/api/core";
 
@@ -108,9 +109,6 @@
 		}
 	}
 
-	$: overflowsX = Math.max(device.columns, device.encoders, device.touchpoints) > 8;
-	$: overflowsY = (device.rows + Math.min(device.encoders, 1) + Math.min(device.touchpoints, 1)) > 4;
-
 	// Grid navigation: track focused cell and compute row lengths for arrow key movement.
 	let focusedRow = 0;
 	let focusedCol = 0;
@@ -191,30 +189,13 @@
 	}
 </script>
 
-<style>
-	.device-fade-x {
-		mask-image: linear-gradient(to right, transparent, black 7.5rem, black calc(100% - 7.5rem), transparent);
-	}
-	.device-fade-y {
-		mask-image: linear-gradient(to bottom, transparent, black 7.5rem, black calc(100% - 7.5rem), transparent);
-	}
-	.device-fade-xy {
-		mask-image:
-			linear-gradient(to right, transparent, black 7.5rem, black calc(100% - 7.5rem), transparent),
-			linear-gradient(to bottom, transparent, black 7.5rem, black calc(100% - 7.5rem), transparent);
-		mask-composite: intersect;
-	}
-</style>
 
 {#key device}
 	<span id="grid-description" class="sr-only">Use arrow keys to navigate between keys. Moving to a key will display its property inspector.</span>
 	<div
 		class="flex flex-col justify-center grow px-16 py-6 overflow-auto"
-		class:items-center={device.columns <= 8}
+		class:items-center={device.columns <= 8 || device.columns === 9}
 		class:hidden={$inspectedParentAction || selectedDevice != device.id}
-		class:device-fade-x={overflowsX && !overflowsY}
-		class:device-fade-y={overflowsY && !overflowsX}
-		class:device-fade-xy={overflowsX && overflowsY}
 		role="grid"
 		aria-label={device.name}
 		aria-describedby="grid-description"
@@ -224,6 +205,7 @@
 		on:keydown|capture={handleGridKeydown}
 		on:focusin={handleGridFocusin}
 	>
+		<div style="transform: scale({$uiScale}); transform-origin: center top;">
 		<div class="flex flex-col" role="rowgroup">
 			{#each { length: device.rows } as _, r}
 				<div class="flex flex-row" role="row">
@@ -240,7 +222,7 @@
 							on:drop={(event) => handleDrop(event, "Keypad", pos)}
 							on:dragstart={(event) => handleDragStart(event, "Keypad", pos)}
 							{handlePaste}
-							size={device.id.startsWith("sd-") && device.rows == 4 && device.columns == 8 ? 192 : 144}
+							size={device.rows == 4 && device.columns == 9 ? 120 : device.id.startsWith("sd-") && device.rows == 4 && device.columns == 8 ? 192 : 144}
 							label="Key {String.fromCharCode(65 + r)}{c + 1}"
 							tabindex={focusedRow === r && focusedCol === c ? 0 : -1}
 							dragHighlight={$dragAction ? (isCompat ? (isHovered ? "hovered" : (isEmpty ? "empty" : "occupied")) : "incompatible") : null}
@@ -252,7 +234,7 @@
 
 		{#if device.encoders > 0}
 			{#if allProfileIds.length > 1}
-				<div class="flex justify-between items-center mx-auto mt-1 mb-0.5" style="width: {device.columns <= 8 ? (device.columns * 132) : (device.columns * 144)}px;">
+				<div class="flex justify-between items-center mx-auto mt-1 mb-0.5" style="width: {device.encoders > 4 ? (device.encoders * 132) : (device.columns <= 8 ? (device.columns * 132) : (device.columns * 144))}px;">
 					<label class="flex items-center gap-1.5 px-2 py-1 rounded cursor-pointer hover:bg-neutral-800 transition-colors">
 						<span class="text-sm text-neutral-500">&#x2190;</span>
 						<div class="select-profile-wrapper" style="padding-right: 12px;">
@@ -283,7 +265,7 @@
 				</div>
 			{/if}
 			<div class="flex justify-center" role="row">
-			<div class="flex flex-row items-start justify-center gap-0" style="width: {device.columns <= 8 ? (device.columns * 132) : (device.columns * 144)}px;">
+			<div class="flex flex-row items-start justify-center gap-0" style="width: {device.columns * 132}px;">
 			<div class="flex flex-row items-start justify-center gap-0 flex-1">
 				{#each { length: device.encoders } as _, i}
 					{@const isCompat = $dragAction ? $dragAction.controllers.includes("Encoder") : false}
@@ -342,6 +324,7 @@
 					tabindex={focusedRow === touchpointRowIndex && focusedCol === i ? 0 : -1}
 				/>
 			{/each}
+		</div>
 		</div>
 	</div>
 {/key}

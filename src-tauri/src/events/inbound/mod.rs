@@ -86,7 +86,7 @@ pub async fn process_incoming_message(data: Result<Message, Error>, uuid: &str, 
 					log::warn!("Custom event parse error: {} -- {}", e, &text[..text.len().min(300)]);
 				}
 				return;
-			},
+			}
 		};
 
 		if !(uuid.is_empty() && skip_auth) {
@@ -162,10 +162,10 @@ pub async fn process_incoming_message(data: Result<Message, Error>, uuid: &str, 
 			InboundEventType::SendToPlugin(_) => Ok(()),
 			InboundEventType::SwitchProfile(event) => misc::switch_profile(event).await,
 			InboundEventType::DeviceBrightness(event) => misc::device_brightness(event).await,
-				InboundEventType::TriggerChildPress(event) => misc::trigger_child_press(event).await,
-				InboundEventType::CreateChild(event) => misc::create_child(event).await,
-				InboundEventType::RemoveChild(event) => misc::remove_child(event).await,
-				InboundEventType::OpenChildPI(event) => misc::open_child_pi(event).await,
+			InboundEventType::TriggerChildPress(event) => misc::trigger_child_press(event).await,
+			InboundEventType::CreateChild(event) => misc::create_child(event).await,
+			InboundEventType::RemoveChild(event) => misc::remove_child(event).await,
+			InboundEventType::OpenChildPI(event) => misc::open_child_pi(event).await,
 		} && !error.to_string().contains("closed connection")
 		{
 			warn!("Failed to process incoming event from plugin: {}", error);

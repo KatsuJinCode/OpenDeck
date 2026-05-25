@@ -14,7 +14,27 @@ use image::GenericImageView as _;
 use tokio::sync::RwLock;
 
 static ELGATO_DEVICES: LazyLock<RwLock<HashMap<String, AsyncStreamDeck>>> = LazyLock::new(|| RwLock::new(HashMap::new()));
+static LCD_FRAMEBUFFERS: LazyLock<RwLock<HashMap<String, image::RgbImage>>> = LazyLock::new(|| RwLock::new(HashMap::new()));
 static HIDAPI: LazyLock<RwLock<Option<Arc<hidapi::HidApi>>>> = LazyLock::new(|| RwLock::new(None));
+
+fn plusxl_lcd_strip(kind: Kind) -> Option<(u32, u32)> {
+	if kind == Kind::PlusXl {
+		Some((100, 1200))
+	} else {
+		None
+	}
+}
+
+async fn flush_lcd_framebuffer(device: &AsyncStreamDeck, id: &str) -> Result<(), anyhow::Error> {
+	let fbs = LCD_FRAMEBUFFERS.read().await;
+	if let Some(fb) = fbs.get(id) {
+		let format = device.kind().lcd_image_format().unwrap();
+		let rotated = image::DynamicImage::ImageRgb8(fb.clone()).rotate270();
+		let jpeg_data = convert_image_with_format_async(format, rotated)?;
+		device.write_lcd_fill(&jpeg_data).await?;
+	}
+	Ok(())
+}
 
 /// Extract the average colour from an image.
 fn extract_average_colour(img: &image::DynamicImage) -> (u8, u8, u8) {
@@ -39,12 +59,25 @@ pub async fn update_image(context: &crate::shared::Context, image: Option<&str>)
 			let bytes = base64::engine::general_purpose::STANDARD.decode(data)?;
 			if context.controller == "Encoder" {
 				let img = image::load_from_memory(&bytes)?;
-				let final_img = if img.width() == 200 && img.height() == 100 {
-					img // Already correct size -- skip resize to preserve pixel-perfect rendering
+				let seg_w = 200u32;
+				let seg_h = 100u32;
+				let final_img = if img.width() == seg_w && img.height() == seg_h {
+					img
 				} else {
-					img.resize_exact(200, 100, image::imageops::FilterType::Lanczos3)
+					img.resize_exact(seg_w, seg_h, image::imageops::FilterType::Lanczos3)
 				};
-				device.write_lcd(context.position as u16 * 200, 0, &ImageRect::from_image_async(final_img)?).await?;
+				if plusxl_lcd_strip(kind).is_some() {
+					let seg = final_img.to_rgb8();
+					let enc_idx = context.position as u32;
+					let mut fbs = LCD_FRAMEBUFFERS.write().await;
+					let fb = fbs.get_mut(&context.device).unwrap();
+					let src = image::DynamicImage::ImageRgb8(seg).rotate90().to_rgb8();
+					image::imageops::overlay(fb, &src, 0, (enc_idx * 200) as i64);
+					drop(fbs);
+					flush_lcd_framebuffer(device, &context.device).await?;
+				} else {
+					device.write_lcd(context.position as u16 * 200, 0, &ImageRect::from_image_async(final_img)?).await?;
+				}
 			} else if is_touch_point {
 				let (r, g, b) = extract_average_colour(&image::load_from_memory(&bytes)?);
 				device.set_touchpoint_color(context.position - key_count, r, g, b).await?;
@@ -52,9 +85,22 @@ pub async fn update_image(context: &crate::shared::Context, image: Option<&str>)
 				device.set_button_image(context.position, image::load_from_memory(&bytes)?).await?;
 			}
 		} else if context.controller == "Encoder" {
-			device
-				.write_lcd(context.position as u16 * 200, 0, &ImageRect::from_image_async(image::DynamicImage::new_rgb8(200, 100))?)
-				.await?;
+			if plusxl_lcd_strip(kind).is_some() {
+				let enc_idx = context.position as u32;
+				let mut fbs = LCD_FRAMEBUFFERS.write().await;
+				let fb = fbs.get_mut(&context.device).unwrap();
+				for y in (enc_idx * 200)..((enc_idx + 1) * 200).min(1200) {
+					for x in 0..100u32 {
+						fb.put_pixel(x, y, image::Rgb([0, 0, 0]));
+					}
+				}
+				drop(fbs);
+				flush_lcd_framebuffer(device, &context.device).await?;
+			} else {
+				device
+					.write_lcd(context.position as u16 * 200, 0, &ImageRect::from_image_async(image::DynamicImage::new_rgb8(200, 100))?)
+					.await?;
+			}
 		} else if is_touch_point {
 			device.set_touchpoint_color(context.position - key_count, 0, 0, 0).await?;
 		} else {
@@ -74,11 +120,28 @@ async fn clear_all_touchpoints(device: &AsyncStreamDeck) {
 
 pub async fn clear_screen(id: &str) -> Result<(), anyhow::Error> {
 	if let Some(device) = ELGATO_DEVICES.read().await.get(id) {
+		let kind = device.kind();
 		device.clear_all_button_images().await?;
-		if device.kind() == Kind::Plus {
-			device
-				.write_lcd_fill(&convert_image_with_format_async(device.kind().lcd_image_format().unwrap(), image::DynamicImage::new_rgb8(800, 100))?)
-				.await?;
+		if matches!(kind, Kind::Plus | Kind::PlusXl) {
+			if plusxl_lcd_strip(kind).is_some() {
+				let mut fbs = LCD_FRAMEBUFFERS.write().await;
+				fbs.insert(id.to_string(), image::RgbImage::new(100, 1200));
+				drop(fbs);
+				flush_lcd_framebuffer(device, id).await?;
+			} else {
+				let lcd_w = kind.encoder_count() as u16 * 200;
+				let blank = ImageRect {
+					w: lcd_w, h: 100,
+					data: {
+						use image::codecs::jpeg::JpegEncoder;
+						use image::ColorType;
+						let mut v = Vec::new();
+						JpegEncoder::new_with_quality(&mut v, 90).encode(&vec![0u8; lcd_w as usize * 100 * 3], lcd_w as u32, 100, ColorType::Rgb8.into()).unwrap();
+						v
+					}
+				};
+				device.write_lcd_fill(&blank.data).await?;
+			}
 		}
 		clear_all_touchpoints(device).await;
 		device.flush().await?;
@@ -111,11 +174,14 @@ async fn init(device: AsyncStreamDeck, device_id: String) {
 		Kind::Mini | Kind::MiniMk2 | Kind::MiniDiscord | Kind::MiniMk2Module => 1,
 		Kind::Xl | Kind::XlV2 | Kind::XlV2Module => 2,
 		Kind::Pedal => 5,
-		Kind::Plus => 7,
+		Kind::Plus | Kind::PlusXl => 7,
 		Kind::Neo => 9,
 	};
 	let _ = device.clear_all_button_images().await;
 	clear_all_touchpoints(&device).await;
+	if plusxl_lcd_strip(kind).is_some() {
+		LCD_FRAMEBUFFERS.write().await.insert(device_id.clone(), image::RgbImage::new(100, 1200));
+	}
 	if let Ok(settings) = crate::store::get_settings() {
 		let _ = device.set_brightness(settings.value.brightness).await;
 	}
@@ -151,7 +217,8 @@ async fn init(device: AsyncStreamDeck, device_id: String) {
 		},
 	};
 	// Each encoder slot is 200px wide on the touch strip
-	let encoder_width: u16 = if kind.encoder_count() > 0 { 800 / kind.encoder_count() as u16 } else { 200 };
+	let lcd_w = kind.lcd_strip_size().map(|(w, _)| w as u16).unwrap_or(800);
+	let encoder_width: u16 = if kind.encoder_count() > 0 { lcd_w / kind.encoder_count() as u16 } else { 200 };
 	let touch = |x: u16, y: u16, hold: bool| {
 		let slot = (x / encoder_width).min(kind.encoder_count().saturating_sub(1) as u16) as u8;
 		let local_x = x - (slot as u16 * encoder_width);
@@ -176,7 +243,18 @@ async fn init(device: AsyncStreamDeck, device_id: String) {
 				match &update {
 					DeviceStateUpdate::TouchScreenPress(x, y) => log::info!("[touch] t={} PRESS x={} y={} enc={}", ms, x, y, x / 200),
 					DeviceStateUpdate::TouchScreenLongPress(x, y) => log::info!("[touch] t={} LONGPRESS x={} y={} enc={}", ms, x, y, x / 200),
-					DeviceStateUpdate::TouchScreenSwipe(from, to) => log::info!("[touch] t={} SWIPE from=({},{}) to=({},{}) enc={}->{}  dx={} dy={}", ms, from.0, from.1, to.0, to.1, from.0/200, to.0/200, (to.0 as i32)-(from.0 as i32), (to.1 as i32)-(from.1 as i32)),
+					DeviceStateUpdate::TouchScreenSwipe(from, to) => log::info!(
+						"[touch] t={} SWIPE from=({},{}) to=({},{}) enc={}->{}  dx={} dy={}",
+						ms,
+						from.0,
+						from.1,
+						to.0,
+						to.1,
+						from.0 / 200,
+						to.0 / 200,
+						(to.0 as i32) - (from.0 as i32),
+						(to.1 as i32) - (from.1 as i32)
+					),
 					DeviceStateUpdate::EncoderDown(dial) => log::info!("[touch] t={} ENC_DOWN dial={}", ms, dial),
 					DeviceStateUpdate::EncoderUp(dial) => log::info!("[touch] t={} ENC_UP dial={}", ms, dial),
 					DeviceStateUpdate::TouchPointDown(p) => log::info!("[touch] t={} TPOINT_DOWN {}", ms, p),
@@ -203,6 +281,7 @@ async fn init(device: AsyncStreamDeck, device_id: String) {
 	}
 
 	ELGATO_DEVICES.write().await.remove(&device_id);
+	LCD_FRAMEBUFFERS.write().await.remove(&device_id);
 	crate::events::inbound::devices::deregister_device("", crate::events::inbound::PayloadEvent { payload: device_id })
 		.await
 		.unwrap();

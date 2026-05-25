@@ -3,8 +3,9 @@
 	import type { Profile } from "$lib/Profile";
 
 	import { initPortBase } from "$lib/ports";
-	import { inspectedParentAction } from "$lib/propertyInspector";
+	import { inspectedInstance, inspectedParentAction } from "$lib/propertyInspector";
 	import { actionList, deviceSelector, profileManager } from "$lib/singletons";
+	import { uiScale } from "$lib/uiScale";
 
 	import ActionList from "../components/ActionList.svelte";
 	import DeviceSelector from "../components/DeviceSelector.svelte";
@@ -27,7 +28,7 @@
 <svelte:window on:dragover={(event) => event.preventDefault()} on:drop={(event) => event.preventDefault()} />
 
 <div class="flex flex-row h-screen">
-	<div class="flex flex-col grow min-w-0">
+	<div class="flex flex-col grow min-w-0 relative">
 		<nav class="flex flex-row justify-between items-center p-3" class:hidden={$inspectedParentAction}>
 			<div class="flex flex-col items-start space-y-1">
 				<DeviceSelector
@@ -49,6 +50,18 @@
 
 			<div class="flex flex-row items-center space-x-2" class:mr-4={Object.keys(devices).length > 0}>
 				<DiskIOIndicator />
+				<div class="flex items-center gap-1 text-xs text-neutral-400">
+					<span class="select-none">Scale</span>
+					<input
+						type="range"
+						min="0.5"
+						max="1.5"
+						step="0.05"
+						bind:value={$uiScale}
+						class="w-20 h-1 accent-neutral-400 cursor-pointer"
+					/>
+					<span class="w-8 text-right">{$uiScale.toFixed(2)}x</span>
+				</div>
 				<PluginManager />
 				<SettingsView />
 			</div>
@@ -65,8 +78,10 @@
 				{/if}
 			{/each}
 
-			{#if selectedProfiles[selectedDevice]}
-				<PropertyInspectorView bind:device={devices[selectedDevice]} bind:profile={selectedProfiles[selectedDevice]} />
+			{#if selectedProfiles[selectedDevice] && $inspectedInstance}
+				<div class="absolute bottom-0 left-0 right-0 z-30">
+					<PropertyInspectorView bind:device={devices[selectedDevice]} bind:profile={selectedProfiles[selectedDevice]} />
+				</div>
 			{/if}
 		{:else}
 			<NoDevicesDetected />

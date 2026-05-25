@@ -73,11 +73,7 @@ pub async fn set_selected_profile(device: String, id: String) -> Result<(), Erro
 		for (i, new_slot) in new_keys.iter().enumerate() {
 			let pos = i as u8;
 			let anchor = crate::carry::anchor_or_self(&device, &selected_profile, "Keypad", pos).await;
-			let old_active: Option<crate::shared::ActionInstance> = locks
-				.profile_stores
-				.get_profile_store(&device_info, &anchor)
-				.ok()
-				.and_then(|s| s.value.keys.get(i).cloned().flatten());
+			let old_active: Option<crate::shared::ActionInstance> = locks.profile_stores.get_profile_store(&device_info, &anchor).ok().and_then(|s| s.value.keys.get(i).cloned().flatten());
 			if let (Some(old), Some(new)) = (old_active.as_ref(), new_slot.as_ref())
 				&& old.action.uuid == new.action.uuid
 				&& old.settings == new.settings
@@ -86,7 +82,11 @@ pub async fn set_selected_profile(device: String, id: String) -> Result<(), Erro
 				// Skip the self-anchor case (anchor == new profile) — installing
 				// (X → X) is a no-op redirect that just clutters logs.
 				if anchor != id {
-					pending_carries.push(PendingCarry { controller: "Keypad", position: pos, anchor_profile: anchor });
+					pending_carries.push(PendingCarry {
+						controller: "Keypad",
+						position: pos,
+						anchor_profile: anchor,
+					});
 				}
 			}
 		}
@@ -104,17 +104,15 @@ pub async fn set_selected_profile(device: String, id: String) -> Result<(), Erro
 			{
 				carry_encoder.insert(pos);
 				if anchor != id {
-					pending_carries.push(PendingCarry { controller: "Encoder", position: pos, anchor_profile: anchor });
+					pending_carries.push(PendingCarry {
+						controller: "Encoder",
+						position: pos,
+						anchor_profile: anchor,
+					});
 				}
 			}
 		}
-		log::info!(
-			"[carry] {} → {}: {} keypad carries, {} encoder carries",
-			selected_profile,
-			id,
-			carry_keypad.len(),
-			carry_encoder.len()
-		);
+		log::info!("[carry] {} → {}: {} keypad carries, {} encoder carries", selected_profile, id, carry_keypad.len(), carry_encoder.len());
 
 		let old_profile = &locks.profile_stores.get_profile_store(&device_info, &selected_profile)?.value;
 		for (i, slot) in old_profile.keys.iter().enumerate() {
@@ -259,8 +257,11 @@ pub async fn set_swipe_neighbor(device: String, profile: String, direction: Stri
 	let old_target = if is_left { store.value.swipe_left.clone() } else { store.value.swipe_right.clone() };
 
 	// Set the new value
-	if is_left { store.value.swipe_left = Some(target.clone()); }
-	else { store.value.swipe_right = Some(target.clone()); }
+	if is_left {
+		store.value.swipe_left = Some(target.clone());
+	} else {
+		store.value.swipe_right = Some(target.clone());
+	}
 	store.save()?;
 
 	// Clear old neighbor's reciprocal (if it pointed back to us)

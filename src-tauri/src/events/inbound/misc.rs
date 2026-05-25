@@ -83,10 +83,7 @@ pub async fn switch_profile(event: SwitchProfileEvent) -> Result<(), anyhow::Err
 	// Drive the actual profile change on the backend. Previously this only
 	// emitted a webview event, which only worked when the UI was open. Calling
 	// set_selected_profile directly makes the switch happen headless too.
-	if let Err(e) = crate::events::frontend::profiles::set_selected_profile(
-		event.device.clone(),
-		profile_name,
-	).await {
+	if let Err(e) = crate::events::frontend::profiles::set_selected_profile(event.device.clone(), profile_name).await {
 		log::warn!("[switch_profile] set_selected_profile failed: {}", e);
 	}
 	app_handle.get_webview_window("main").unwrap().emit("switch_profile", event)?;
@@ -121,11 +118,9 @@ pub async fn trigger_child_press(event: TriggerChildPressEvent) -> Result<(), an
 	let action_context: crate::shared::ActionContext = event.context.parse()?;
 
 	let mut locks = acquire_locks_mut().await;
-	let instance = get_instance_mut(&action_context, &mut locks).await?
-		.ok_or_else(|| anyhow::anyhow!("instance not found"))?;
+	let instance = get_instance_mut(&action_context, &mut locks).await?.ok_or_else(|| anyhow::anyhow!("instance not found"))?;
 
-	let children = instance.children.as_mut()
-		.ok_or_else(|| anyhow::anyhow!("instance has no children"))?;
+	let children = instance.children.as_mut().ok_or_else(|| anyhow::anyhow!("instance has no children"))?;
 
 	if event.child_index >= children.len() {
 		return Err(anyhow::anyhow!("child index {} out of range ({})", event.child_index, children.len()));
@@ -151,7 +146,8 @@ pub async fn trigger_child_press(event: TriggerChildPressEvent) -> Result<(), an
 			device: child.context.device.clone(),
 			payload: GenericInstancePayload::new(child),
 		},
-	).await?;
+	)
+	.await?;
 
 	let child_ctx = child.context.clone();
 	let child_plugin = child.action.plugin.clone();
@@ -177,7 +173,8 @@ pub async fn trigger_child_press(event: TriggerChildPressEvent) -> Result<(), an
 						device: child.context.device.clone(),
 						payload: GenericInstancePayload::new(child),
 					},
-				).await?;
+				)
+				.await?;
 			}
 		}
 	}
@@ -199,7 +196,8 @@ pub async fn create_child(event: CreateChildEvent) -> Result<(), anyhow::Error> 
 	let parent_context: crate::shared::Context = (&parent_ctx).into();
 
 	let categories = crate::shared::CATEGORIES.read().await;
-	let action = categories.values()
+	let action = categories
+		.values()
 		.flat_map(|c| c.actions.iter())
 		.find(|a| a.uuid == event.action_uuid)
 		.cloned()
@@ -209,7 +207,9 @@ pub async fn create_child(event: CreateChildEvent) -> Result<(), anyhow::Error> 
 	let mut locks = acquire_locks_mut().await;
 	let slot = get_slot_mut(&parent_context, &mut locks).await?;
 	let Some(instance) = slot else { return Err(anyhow::anyhow!("slot empty")) };
-	let Some(children) = &mut instance.children else { return Err(anyhow::anyhow!("slot doesn't support children")) };
+	let Some(children) = &mut instance.children else {
+		return Err(anyhow::anyhow!("slot doesn't support children"));
+	};
 
 	let index = match children.last() {
 		None => 1,
@@ -259,7 +259,8 @@ pub async fn create_child(event: CreateChildEvent) -> Result<(), anyhow::Error> 
 				}
 			}
 		}),
-	).await;
+	)
+	.await;
 
 	// Send the child's default state image to the parent plugin immediately.
 	let default_image = &child.states[child.current_state as usize].image;
@@ -277,7 +278,8 @@ pub async fn create_child(event: CreateChildEvent) -> Result<(), anyhow::Error> 
 					}
 				}
 			}),
-		).await;
+		)
+		.await;
 	}
 
 	Ok(())
